@@ -1,15 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   getTasks, 
   getCrews, 
+  queueCreateCrew,
   getDailyEntries, 
-  createDailyEntry, 
+  queueCreateDailyEntry,
   deleteDailyEntry,
-  getDailyEntriesByTask,
   type Task,
   type Crew,
   type DailyEntry
 } from '../lib/firebaseQueries';
+import { getLocalISODate } from '../lib/dateUtils';
 
 export default function DailyEntriesPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -20,8 +21,9 @@ export default function DailyEntriesPage() {
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [savingEntry, setSavingEntry] = useState(false);
   const [formData, setFormData] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: getLocalISODate(),
     rubro: '',
     task_id: '',
     crew_id: '',
@@ -36,16 +38,35 @@ export default function DailyEntriesPage() {
     canSubmit: false,
     error: '',
   });
+  const [showCrewForm, setShowCrewForm] = useState(false);
+  const [savingCrew, setSavingCrew] = useState(false);
+  const [crewForm, setCrewForm] = useState({
+    name: '',
+    foreman_name: '',
+    foreman_contact: '',
+    member_count: '',
+    notes: '',
+  });
+  const hasLoadedRef = useRef(false);
+
+  const sortCrewsByName = (items: Crew[]) =>
+    [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const completedQtyByTask = useMemo(() => {
+    return entries.reduce<Record<string, number>>((acc, entry) => {
+      acc[entry.task_id] = (acc[entry.task_id] || 0) + entry.qty;
+      return acc;
+    }, {});
+  }, [entries]);
 
   useEffect(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
     loadData();
   }, []);
 
   useEffect(() => {
-    if (formData.task_id) {
-      validateQty();
-    }
-  }, [formData.task_id, formData.qty, formData.unit]);
+    validateQty();
+  }, [formData.task_id, formData.qty, tasks, entries]);
 
   const loadData = async () => {
     try {
@@ -66,46 +87,50 @@ export default function DailyEntriesPage() {
     }
   };
 
-  const validateQty = async () => {
+  const validateQty = () => {
     if (!formData.task_id || !formData.qty) {
       setValidation({ maxQty: 0, currentQty: 0, canSubmit: false, error: '' });
       return;
     }
 
-    try {
-      const task = tasks.find(t => t.id === formData.task_id);
-      if (!task) return;
+    const task = tasks.find((t) => t.id === formData.task_id);
+    if (!task) return;
 
-      // Obtener cantidad ya completada desde Firebase
-      const completedEntries = await getDailyEntriesByTask(formData.task_id);
-      const currentQty = completedEntries.reduce((sum, entry) => sum + entry.qty, 0);
-      const maxQty = task.total_qty || 0;
-      const newQty = parseFloat(formData.qty) || 0;
-      const totalAfter = currentQty + newQty;
+    const currentQty = completedQtyByTask[formData.task_id] || 0;
+    const maxQty = task.total_qty || 0;
+    const newQty = parseFloat(formData.qty) || 0;
+    const totalAfter = currentQty + newQty;
 
-      const canSubmit = maxQty > 0 && totalAfter <= maxQty && newQty > 0;
-      const error = maxQty > 0 && totalAfter > maxQty 
-        ? `Excede el máximo permitido. Máximo: ${maxQty}, Actual: ${currentQty}, Nuevo: ${newQty}`
-        : '';
+    const canSubmit = newQty > 0 && (maxQty <= 0 || totalAfter <= maxQty);
+    const error = maxQty > 0 && totalAfter > maxQty
+      ? `Excede el maximo permitido. Maximo: ${maxQty}, Actual: ${currentQty}, Nuevo: ${newQty}`
+      : '';
 
-      setValidation({
-        maxQty,
-        currentQty,
-        canSubmit,
-        error,
-      });
-    } catch (error) {
-      console.error('Error validating qty:', error);
-    }
+    setValidation({
+      maxQty,
+      currentQty,
+      canSubmit,
+      error,
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!validation.canSubmit) return;
+    if (savingEntry) return;
+
+    if (!formData.task_id || !formData.crew_id || !formData.qty) {
+      alert('Completa Fecha, Tarea, Crew y Cantidad para guardar la entrada.');
+      return;
+    }
+
+    if (!validation.canSubmit) {
+      alert(validation.error || 'La entrada no se puede guardar con los valores actuales.');
+      return;
+    }
 
     try {
-      await createDailyEntry({
+      setSavingEntry(true);
+      const queuedEntry = queueCreateDailyEntry({
         date: formData.date,
         task_id: formData.task_id,
         crew_id: formData.crew_id,
@@ -114,10 +139,25 @@ export default function DailyEntriesPage() {
         foreman: formData.foreman || undefined,
         notes: formData.notes || undefined,
       });
+      const createdEntryId = queuedEntry.id;
 
-      // Limpiar formulario
+      setEntries((prev) => [
+        {
+          id: createdEntryId,
+          date: formData.date,
+          task_id: formData.task_id,
+          crew_id: formData.crew_id,
+          qty: parseFloat(formData.qty),
+          unit: formData.unit as 'm3' | 'ml' | 'm2' | 'u',
+          foreman: formData.foreman || undefined,
+          notes: formData.notes || undefined,
+          created_at: new Date(),
+        },
+        ...prev,
+      ]);
+
       setFormData({
-        date: new Date().toISOString().split('T')[0],
+        date: getLocalISODate(),
         rubro: '',
         task_id: '',
         crew_id: '',
@@ -126,15 +166,22 @@ export default function DailyEntriesPage() {
         foreman: '',
         notes: '',
       });
-      setShowForm(false);
-      await loadData();
+      setSavingEntry(false);
+
+      queuedEntry.commit.catch((error) => {
+        console.error('Error saving entry:', error);
+        setEntries((prev) => prev.filter((entry) => entry.id !== createdEntryId));
+        alert('No se pudo guardar la entrada en Firebase. Se revirtio la entrada local.');
+      });
     } catch (error) {
       console.error('Error saving entry:', error);
+      alert('No se pudo guardar la entrada. Revisa conexion/permisos e intenta de nuevo.');
+      setSavingEntry(false);
     }
   };
 
   const handleDelete = async (entryId: string) => {
-    if (!confirm('¿Estás seguro de que querés borrar esta entrada?')) return;
+    if (!confirm('Estas seguro de que queres borrar esta entrada?')) return;
 
     try {
       await deleteDailyEntry(entryId);
@@ -142,6 +189,70 @@ export default function DailyEntriesPage() {
     } catch (error) {
       console.error('Error deleting entry:', error);
       alert('Error al borrar la entrada');
+    }
+  };
+
+  const handleCreateCrew = async () => {
+    if (savingCrew) return;
+    if (!crewForm.name.trim()) {
+      alert('Ingresa un nombre para la crew.');
+      return;
+    }
+
+    try {
+      setSavingCrew(true);
+      const crewName = crewForm.name.trim();
+      const crewForemanName = crewForm.foreman_name.trim() || undefined;
+      const crewForemanContact = crewForm.foreman_contact.trim() || undefined;
+      const crewMemberCount = crewForm.member_count ? parseInt(crewForm.member_count, 10) : undefined;
+      const crewNotes = crewForm.notes.trim() || undefined;
+
+      const queuedCrew = queueCreateCrew({
+        name: crewName,
+        foreman_name: crewForemanName,
+        foreman_contact: crewForemanContact,
+        member_count: crewMemberCount,
+        notes: crewNotes,
+      });
+      const crewId = queuedCrew.id;
+
+      setCrews((prev) =>
+        sortCrewsByName([
+          ...prev,
+          {
+            id: crewId,
+            name: crewName,
+            foreman_name: crewForemanName,
+            foreman_contact: crewForemanContact,
+            member_count: crewMemberCount,
+            notes: crewNotes,
+            active: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ])
+      );
+
+      setCrewForm({
+        name: '',
+        foreman_name: '',
+        foreman_contact: '',
+        member_count: '',
+        notes: '',
+      });
+      setFormData((prev) => ({ ...prev, crew_id: crewId }));
+      setSavingCrew(false);
+
+      queuedCrew.commit.catch((error) => {
+        console.error('Error creating crew:', error);
+        setCrews((prev) => prev.filter((crew) => crew.id !== crewId));
+        setFormData((prev) => (prev.crew_id === crewId ? { ...prev, crew_id: '' } : prev));
+        alert('No se pudo guardar la crew en Firebase. Se revirtio la crew local.');
+      });
+    } catch (error) {
+      console.error('Error creating crew:', error);
+      alert('No se pudo crear la crew. Revisa permisos/reglas de Firestore.');
+      setSavingCrew(false);
     }
   };
 
@@ -156,6 +267,8 @@ export default function DailyEntriesPage() {
   });
 
   const rubros = [...new Set(tasks.map(t => t.rubro))];
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const crewById = useMemo(() => new Map(crews.map((crew) => [crew.id, crew])), [crews]);
 
   if (loading) {
     return (
@@ -313,14 +426,14 @@ export default function DailyEntriesPage() {
               <div className="flex gap-4">
                 <button
                   type="submit"
-                  disabled={!validation.canSubmit}
+                  disabled={!validation.canSubmit || savingEntry}
                   className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
-                    validation.canSubmit
+                    validation.canSubmit && !savingEntry
                       ? 'bg-green-600 hover:bg-green-700 text-white'
                       : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                   }`}
                 >
-                  Guardar Entrada
+                  {savingEntry ? 'Guardando...' : 'Guardar Entrada'}
                 </button>
                 <button
                   type="button"
@@ -384,8 +497,8 @@ export default function DailyEntriesPage() {
               </thead>
               <tbody className="divide-y divide-gray-700">
                 {filteredEntries.map((entry) => {
-                  const task = tasks.find(t => t.id === entry.task_id);
-                  const crew = crews.find(c => c.id === entry.crew_id);
+                  const task = taskById.get(entry.task_id);
+                  const crew = crewById.get(entry.crew_id);
                   
                   return (
                     <tr key={entry.id} className="hover:bg-gray-800/30 transition-colors">
@@ -428,13 +541,83 @@ export default function DailyEntriesPage() {
           </div>
           <div className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
             <div className="text-2xl font-bold text-white">
-              {new Set(filteredEntries.map(e => e.crew_id)).size}
+              {crews.length}
             </div>
-            <div className="text-sm text-gray-400">Crews Activas</div>
+            <div className="text-sm text-gray-400 mb-3">Crews Activas</div>
+            <button
+              type="button"
+              onClick={() => setShowCrewForm((v) => !v)}
+              className="text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
+            >
+              {showCrewForm ? 'Cancelar nueva crew' : '+ Nueva Crew'}
+            </button>
           </div>
         </div>
+
+        {showCrewForm && (
+          <div className="mt-6 bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700">
+            <h3 className="text-lg font-bold text-white mb-4">Crear Nueva Crew</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                type="text"
+                value={crewForm.name}
+                onChange={(e) => setCrewForm({ ...crewForm, name: e.target.value })}
+                placeholder="Nombre de crew"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              />
+              <input
+                type="text"
+                value={crewForm.foreman_name}
+                onChange={(e) => setCrewForm({ ...crewForm, foreman_name: e.target.value })}
+                placeholder="Capataz (opcional)"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              />
+              <input
+                type="text"
+                value={crewForm.foreman_contact}
+                onChange={(e) => setCrewForm({ ...crewForm, foreman_contact: e.target.value })}
+                placeholder="Contacto (opcional)"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              />
+              <input
+                type="number"
+                value={crewForm.member_count}
+                onChange={(e) => setCrewForm({ ...crewForm, member_count: e.target.value })}
+                placeholder="Integrantes"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              />
+              <textarea
+                value={crewForm.notes}
+                onChange={(e) => setCrewForm({ ...crewForm, notes: e.target.value })}
+                placeholder="Notas (opcional)"
+                rows={2}
+                className="md:col-span-2 w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+            <div className="mt-4 flex gap-3">
+              <button
+                type="button"
+                onClick={handleCreateCrew}
+                disabled={savingCrew}
+                className={`text-white px-4 py-2 rounded-lg transition-colors ${
+                  savingCrew ? 'bg-green-800 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                }`}
+              >
+                {savingCrew ? 'Guardando...' : 'Guardar Crew'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCrewForm(false)}
+                className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
 

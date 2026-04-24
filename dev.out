@@ -1,0 +1,9 @@
+
+> obra-app@0.0.0 dev
+> vite --host 127.0.0.1 --port 4173
+
+Port 4173 is in use, trying another one...
+
+  [32m[1mVITE[22m v7.1.5[39m  [2mready in [0m[1m91[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m4174[22m/[39m

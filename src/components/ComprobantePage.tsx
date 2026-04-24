@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   getPaymentReceipts, 
-  getPaymentReceipt,
-  getPayrollPeriods,
-  getCrew,
+  getPayrollPeriodsByIds,
+  getCrewsByIds,
   type PaymentReceipt,
   type PayrollPeriod,
   type Crew
 } from '../lib/firebaseQueries';
+import { getLocalISODate } from '../lib/dateUtils';
 
 type PaymentReceiptWithRelations = PaymentReceipt & {
   payroll_period: PayrollPeriod & {
@@ -21,30 +21,31 @@ export default function ComprobantePage() {
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentReceiptWithRelations | null>(null);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const hasLoadedRef = useRef(false);
 
   useEffect(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
     loadReceipts();
   }, []);
 
   const loadReceipts = async () => {
     try {
-      // Obtener todos los comprobantes
       const receiptsData = await getPaymentReceipts();
-      
-      // Obtener períodos de payroll y crews relacionados
-      const receiptsWithRelations = await Promise.all(
-        receiptsData.map(async (receipt) => {
-          // Buscar el período de payroll
-          const periods = await getPayrollPeriods();
-          const period = periods.find(p => p.id === receipt.payroll_period_id);
-          
-          if (!period) {
-            return null;
-          }
+      const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
+      const periodsData = await getPayrollPeriodsByIds(periodIds);
+      const crewIds = [...new Set(periodsData.map((period) => period.crew_id))];
+      const crewsData = await getCrewsByIds(crewIds);
 
-          // Obtener crew
-          const crew = await getCrew(period.crew_id);
+      const periodById = new Map(periodsData.map((period) => [period.id, period]));
+      const crewById = new Map(crewsData.map((crew) => [crew.id, crew]));
 
+      const receiptsWithRelations = receiptsData
+        .map((receipt) => {
+          const period = periodById.get(receipt.payroll_period_id);
+          if (!period) return null;
+
+          const crew = crewById.get(period.crew_id);
           return {
             ...receipt,
             payroll_period: {
@@ -53,9 +54,9 @@ export default function ComprobantePage() {
             },
           } as PaymentReceiptWithRelations;
         })
-      );
+        .filter((receipt): receipt is PaymentReceiptWithRelations => receipt !== null);
 
-      setReceipts(receiptsWithRelations.filter(r => r !== null) as PaymentReceiptWithRelations[]);
+      setReceipts(receiptsWithRelations);
     } catch (error) {
       console.error('Error loading receipts:', error);
     } finally {
@@ -64,7 +65,7 @@ export default function ComprobantePage() {
   };
 
   const filteredReceipts = receipts.filter(receipt => {
-    const receiptDate = new Date(receipt.created_at).toISOString().split('T')[0];
+    const receiptDate = getLocalISODate(new Date(receipt.created_at));
     const matchesDateFrom = !filterDateFrom || receiptDate >= filterDateFrom;
     const matchesDateTo = !filterDateTo || receiptDate <= filterDateTo;
     return matchesDateFrom && matchesDateTo;
@@ -483,4 +484,5 @@ export default function ComprobantePage() {
     </div>
   );
 }
+
 

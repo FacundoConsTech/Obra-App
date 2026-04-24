@@ -1,19 +1,23 @@
 import { 
   collection, 
+  collectionGroup,
   doc, 
   getDocs, 
   getDoc, 
   addDoc, 
+  setDoc,
   updateDoc, 
   deleteDoc, 
   query, 
   where, 
   orderBy,
+  documentId,
   limit,
   Timestamp,
   QueryConstraint
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { getLocalISODate } from './dateUtils';
 
 // ============================================
 // TIPOS
@@ -38,6 +42,7 @@ export type Task = {
   description: string;
   total_qty?: number;
   unit?: 'm3' | 'ml' | 'm2' | 'u';
+  unit_price?: number | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -110,6 +115,11 @@ const toTimestamp = (date: Date | string) => {
   return Timestamp.fromDate(d);
 };
 
+export type QueuedWrite = {
+  id: string;
+  commit: Promise<void>;
+};
+
 // ============================================
 // CREWS
 // ============================================
@@ -139,6 +149,41 @@ export const getCrew = async (id: string): Promise<Crew | null> => {
     created_at: toDate(docSnap.data().created_at),
     updated_at: toDate(docSnap.data().updated_at),
   } as Crew;
+};
+
+export const createCrew = async (crewData: {
+  name: string;
+  foreman_name?: string;
+  foreman_contact?: string;
+  member_count?: number;
+  notes?: string;
+}): Promise<string> => {
+  const now = new Date();
+  const docRef = await addDoc(collection(db, 'crews'), {
+    ...crewData,
+    active: true,
+    created_at: toTimestamp(now),
+    updated_at: toTimestamp(now),
+  });
+  return docRef.id;
+};
+
+export const queueCreateCrew = (crewData: {
+  name: string;
+  foreman_name?: string;
+  foreman_contact?: string;
+  member_count?: number;
+  notes?: string;
+}): QueuedWrite => {
+  const now = new Date();
+  const docRef = doc(collection(db, 'crews'));
+  const commit = setDoc(docRef, {
+    ...crewData,
+    active: true,
+    created_at: toTimestamp(now),
+    updated_at: toTimestamp(now),
+  });
+  return { id: docRef.id, commit };
 };
 
 // ============================================
@@ -182,6 +227,19 @@ export const createTask = async (taskData: Omit<Task, 'id' | 'created_at' | 'upd
   return docRef.id;
 };
 
+export const queueCreateTask = (
+  taskData: Omit<Task, 'id' | 'created_at' | 'updated_at'>
+): QueuedWrite => {
+  const now = new Date();
+  const docRef = doc(collection(db, 'tasks'));
+  const commit = setDoc(docRef, {
+    ...taskData,
+    created_at: toTimestamp(now),
+    updated_at: toTimestamp(now),
+  });
+  return { id: docRef.id, commit };
+};
+
 export const updateTask = async (id: string, updates: Partial<Task>): Promise<void> => {
   const docRef = doc(db, 'tasks', id);
   await updateDoc(docRef, {
@@ -209,7 +267,7 @@ export const getTaskPrices = async (taskId: string): Promise<TaskPrice[]> => {
 };
 
 export const getCurrentTaskPrice = async (taskId: string, date?: string): Promise<TaskPrice | null> => {
-  const checkDate = date || new Date().toISOString().split('T')[0];
+  const checkDate = date || getLocalISODate();
   
   // Obtener todos los precios y filtrar en memoria (evita problema de índices)
   const q = query(
@@ -240,12 +298,95 @@ export const getCurrentTaskPrice = async (taskId: string, date?: string): Promis
   return null;
 };
 
+export const getCurrentTaskPricesByTaskIds = async (
+  taskIds: string[],
+  date?: string
+): Promise<Map<string, number | null>> => {
+  const result = new Map<string, number | null>();
+  if (taskIds.length === 0) return result;
+
+  const checkDate = date || getLocalISODate();
+  const taskIdSet = new Set(taskIds);
+
+  const q = query(
+    collectionGroup(db, 'taskPrices'),
+    where('valid_from', '<=', checkDate),
+    orderBy('valid_from', 'desc')
+  );
+  const snapshot = await getDocs(q);
+
+  snapshot.docs.forEach((priceDoc) => {
+    const taskId = priceDoc.ref.parent.parent?.id;
+    if (!taskId || !taskIdSet.has(taskId) || result.has(taskId)) return;
+
+    const data = priceDoc.data();
+    if (data.valid_to && data.valid_to < checkDate) return;
+    result.set(taskId, typeof data.unit_price === 'number' ? data.unit_price : null);
+  });
+
+  taskIds.forEach((taskId) => {
+    if (!result.has(taskId)) result.set(taskId, null);
+  });
+
+  return result;
+};
+
 export const createTaskPrice = async (taskId: string, priceData: Omit<TaskPrice, 'id' | 'task_id' | 'created_at'>): Promise<string> => {
   const docRef = await addDoc(collection(db, 'tasks', taskId, 'taskPrices'), {
     ...priceData,
     created_at: toTimestamp(new Date()),
   });
   return docRef.id;
+};
+
+export const queueCreateTaskPrice = (
+  taskId: string,
+  priceData: Omit<TaskPrice, 'id' | 'task_id' | 'created_at'>
+): QueuedWrite => {
+  const docRef = doc(collection(db, 'tasks', taskId, 'taskPrices'));
+  const commit = setDoc(docRef, {
+    ...priceData,
+    created_at: toTimestamp(new Date()),
+  });
+  return { id: docRef.id, commit };
+};
+
+export const getTaskPricesByTaskIds = async (
+  taskIds: string[],
+  dateTo?: string
+): Promise<Map<string, TaskPrice[]>> => {
+  const pricesByTaskId = new Map<string, TaskPrice[]>();
+  if (taskIds.length === 0) return pricesByTaskId;
+
+  const taskIdSet = new Set(taskIds);
+  const constraints: QueryConstraint[] = [];
+  if (dateTo) {
+    constraints.push(where('valid_from', '<=', dateTo));
+  }
+  constraints.push(orderBy('valid_from', 'desc'));
+
+  const q = query(collectionGroup(db, 'taskPrices'), ...constraints);
+  const snapshot = await getDocs(q);
+
+  snapshot.docs.forEach((priceDoc) => {
+    const taskId = priceDoc.ref.parent.parent?.id;
+    if (!taskId || !taskIdSet.has(taskId)) return;
+    const data = priceDoc.data();
+    const item = {
+      id: priceDoc.id,
+      task_id: taskId,
+      ...data,
+      created_at: toDate(data.created_at),
+    } as TaskPrice;
+    const current = pricesByTaskId.get(taskId);
+    if (current) {
+      current.push(item);
+    } else {
+      pricesByTaskId.set(taskId, [item]);
+    }
+  });
+
+  return pricesByTaskId;
 };
 
 // ============================================
@@ -296,6 +437,17 @@ export const createDailyEntry = async (entryData: Omit<DailyEntry, 'id' | 'creat
   return docRef.id;
 };
 
+export const queueCreateDailyEntry = (
+  entryData: Omit<DailyEntry, 'id' | 'created_at'>
+): QueuedWrite => {
+  const docRef = doc(collection(db, 'dailyEntries'));
+  const commit = setDoc(docRef, {
+    ...entryData,
+    created_at: toTimestamp(new Date()),
+  });
+  return { id: docRef.id, commit };
+};
+
 export const deleteDailyEntry = async (id: string): Promise<void> => {
   const docRef = doc(db, 'dailyEntries', id);
   await deleteDoc(docRef);
@@ -320,6 +472,33 @@ export const getPayrollPeriods = async (crewId?: string): Promise<PayrollPeriod[
     created_at: toDate(doc.data().created_at),
     updated_at: toDate(doc.data().updated_at),
   })) as PayrollPeriod[];
+};
+
+export const getPayrollPeriodsByIds = async (periodIds: string[]): Promise<PayrollPeriod[]> => {
+  if (periodIds.length === 0) return [];
+
+  const uniqueIds = [...new Set(periodIds)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniqueIds.length; i += 30) {
+    chunks.push(uniqueIds.slice(i, i + 30));
+  }
+
+  const snapshots = await Promise.all(
+    chunks.map((ids) =>
+      getDocs(
+        query(collection(db, 'payrollPeriods'), where(documentId(), 'in', ids))
+      )
+    )
+  );
+
+  return snapshots.flatMap((snapshot) =>
+    snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      created_at: toDate(doc.data().created_at),
+      updated_at: toDate(doc.data().updated_at),
+    })) as PayrollPeriod[]
+  );
 };
 
 export const createPayrollPeriod = async (periodData: Omit<PayrollPeriod, 'id' | 'created_at' | 'updated_at'>): Promise<string> => {
@@ -368,6 +547,31 @@ export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id
   return docRef.id;
 };
 
+export const getCrewsByIds = async (crewIds: string[]): Promise<Crew[]> => {
+  if (crewIds.length === 0) return [];
+
+  const uniqueIds = [...new Set(crewIds)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniqueIds.length; i += 30) {
+    chunks.push(uniqueIds.slice(i, i + 30));
+  }
+
+  const snapshots = await Promise.all(
+    chunks.map((ids) =>
+      getDocs(query(collection(db, 'crews'), where(documentId(), 'in', ids)))
+    )
+  );
+
+  return snapshots.flatMap((snapshot) =>
+    snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      created_at: toDate(doc.data().created_at),
+      updated_at: toDate(doc.data().updated_at),
+    })) as Crew[]
+  );
+};
+
 export const generateReceiptNumber = async (): Promise<string> => {
   const year = new Date().getFullYear();
   const q = query(
@@ -390,4 +594,3 @@ export const generateReceiptNumber = async (): Promise<string> => {
   
   return `REC-${year}-${String(nextNum).padStart(4, '0')}`;
 };
-

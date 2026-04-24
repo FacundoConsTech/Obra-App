@@ -1,15 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   getCrews, 
+  getTasks,
   getDailyEntries, 
-  getTask, 
-  getCurrentTaskPrice,
+  getTaskPricesByTaskIds,
   createPayrollPeriod,
   generateReceiptNumber,
   createPaymentReceipt,
-  type Crew,
-  type Task
+  type Crew
 } from '../lib/firebaseQueries';
+import { getLocalISODate } from '../lib/dateUtils';
 
 type PayrollEntry = {
   date: string;
@@ -31,6 +31,12 @@ type PayrollCalculation = {
   days_worked: number;
 };
 
+type GeneratedReport = {
+  receipt_id: string;
+  receipt_number: string;
+  issue_date: string;
+};
+
 export default function PayrollPage() {
   const [crews, setCrews] = useState<Crew[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,9 +45,14 @@ export default function PayrollPage() {
   const [dateTo, setDateTo] = useState('');
   const [calculation, setCalculation] = useState<PayrollCalculation | null>(null);
   const [calculating, setCalculating] = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(null);
+  const hasLoadedRef = useRef(false);
 
   useEffect(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
     loadCrews();
   }, []);
 
@@ -59,6 +70,8 @@ export default function PayrollPage() {
   const calculatePayroll = async () => {
     if (!selectedCrew || !dateFrom || !dateTo) return;
 
+    setGeneratedReport(null);
+    setShowReceipt(false);
     setCalculating(true);
     try {
       // Obtener entradas diarias del crew en el rango de fechas desde Firebase
@@ -68,26 +81,45 @@ export default function PayrollPage() {
         dateTo,
       });
 
-      // Obtener precios vigentes para cada tarea
-      const entriesWithPrices = await Promise.all(
-        entriesData.map(async (entry) => {
-          const task = await getTask(entry.task_id);
-          const priceData = await getCurrentTaskPrice(entry.task_id, entry.date);
+      const uniqueTaskIds = [...new Set(entriesData.map((entry) => entry.task_id))];
+      const taskIdSet = new Set(uniqueTaskIds);
+      const [tasksData, taskPricesByTaskId] = await Promise.all([
+        getTasks(),
+        getTaskPricesByTaskIds(uniqueTaskIds, dateTo),
+      ]);
 
-          const unitPrice = priceData?.unit_price || 0;
-          const value = entry.qty * unitPrice;
-
-          return {
-            date: entry.date,
-            task_code: task?.task_code || '',
-            description: task?.description || '',
-            qty: entry.qty,
-            unit: entry.unit,
-            unit_price: unitPrice,
-            value,
-          };
-        })
+      const taskById = new Map(
+        tasksData
+          .filter((task) => taskIdSet.has(task.id))
+          .map((task) => [task.id, task] as const)
       );
+      const getPriceForDate = (taskId: string, date: string) => {
+        const prices = taskPricesByTaskId.get(taskId) || [];
+        const price = prices.find((priceItem) =>
+          priceItem.valid_from <= date && (!priceItem.valid_to || priceItem.valid_to >= date)
+        );
+        if (price?.unit_price !== undefined && price?.unit_price !== null) {
+          return price.unit_price;
+        }
+        const task = taskById.get(taskId);
+        return task?.unit_price ?? 0;
+      };
+
+      const entriesWithPrices = entriesData.map((entry) => {
+        const task = taskById.get(entry.task_id);
+        const unitPrice = getPriceForDate(entry.task_id, entry.date);
+        const value = entry.qty * unitPrice;
+
+        return {
+          date: entry.date,
+          task_code: task?.task_code || '',
+          description: task?.description || '',
+          qty: entry.qty,
+          unit: entry.unit,
+          unit_price: unitPrice,
+          value,
+        };
+      });
 
       const crew = crews.find(c => c.id === selectedCrew);
       const totalValue = entriesWithPrices.reduce((sum, entry) => sum + entry.value, 0);
@@ -110,10 +142,14 @@ export default function PayrollPage() {
   };
 
   const generateReceipt = async () => {
-    if (!calculation) return;
+    if (!calculation || generatingReport) return;
+    if (calculation.entries.length === 0) {
+      alert('No hay tareas certificadas en el periodo seleccionado.');
+      return;
+    }
 
     try {
-      // Crear período de payroll
+      setGeneratingReport(true);
       const periodId = await createPayrollPeriod({
         crew_id: calculation.crew_id,
         start_date: calculation.start_date,
@@ -122,24 +158,46 @@ export default function PayrollPage() {
         status: 'closed',
       });
 
-      // Generar número de comprobante
-      const receiptNumber = await generateReceiptNumber();
+      let receiptNumber = '';
+      try {
+        receiptNumber = await generateReceiptNumber();
+      } catch (numberError) {
+        console.warn('Could not generate sequential receipt number, using fallback.', numberError);
+        const year = new Date().getFullYear();
+        receiptNumber = `REC-${year}-${Date.now().toString().slice(-6)}`;
+      }
+      const issueDate = getLocalISODate();
 
-      // Crear comprobante
-      await createPaymentReceipt({
+      const receiptSummary = [
+        `Crew: ${calculation.crew_name}`,
+        `Periodo: ${calculation.start_date} a ${calculation.end_date}`,
+        `Jornadas: ${calculation.days_worked}`,
+        `Items: ${calculation.entries.length}`,
+        `Total: ${calculation.total_value}`,
+      ].join(' | ');
+
+      const receiptId = await createPaymentReceipt({
         payroll_period_id: periodId,
         number: receiptNumber,
-        issue_date: new Date().toISOString().split('T')[0],
+        issue_date: issueDate,
         amount: calculation.total_value,
         currency: 'ARS',
+        notes: receiptSummary,
       });
 
+      setGeneratedReport({
+        receipt_id: receiptId,
+        receipt_number: receiptNumber,
+        issue_date: issueDate,
+      });
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);
+      alert('No se pudo emitir el informe. Revisa permisos/reglas de Firebase.');
+    } finally {
+      setGeneratingReport(false);
     }
   };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center">
@@ -234,6 +292,11 @@ export default function PayrollPage() {
                     ${calculation.total_value.toLocaleString()}
                   </div>
                   <div className="text-sm text-gray-400">Total a liquidar</div>
+                  {generatedReport && (
+                    <div className="text-xs mt-2 inline-block bg-green-700/40 text-green-200 px-2 py-1 rounded">
+                      Liquidado / Informe emitido
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -285,12 +348,21 @@ export default function PayrollPage() {
               <div className="flex gap-4">
                 <button
                   onClick={generateReceipt}
-                  className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
+                  disabled={generatingReport || !!generatedReport}
+                  className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
+                    generatingReport || generatedReport
+                      ? 'bg-green-800 text-white cursor-not-allowed'
+                      : 'bg-green-600 hover:bg-green-700 text-white'
+                  }`}
                 >
-                  Emitir Comprobante
+                  {generatedReport ? 'Informe Emitido' : generatingReport ? 'Emitiendo...' : 'Emitir Informe'}
                 </button>
                 <button
-                  onClick={() => setCalculation(null)}
+                  onClick={() => {
+                    setCalculation(null);
+                    setGeneratedReport(null);
+                    setShowReceipt(false);
+                  }}
                   className="bg-gray-700 hover:bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
                 >
                   Nueva Consulta
@@ -314,8 +386,12 @@ export default function PayrollPage() {
                   <p className="text-gray-600">0341 525-2476</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-lg font-semibold">REC-2025-0001</p>
-                  <p className="text-gray-600">Fecha: {new Date().toLocaleDateString()}</p>
+                  <p className="text-lg font-semibold">
+                    {generatedReport?.receipt_number || 'REC-PENDIENTE'}
+                  </p>
+                  <p className="text-gray-600">
+                    Fecha: {generatedReport?.issue_date || getLocalISODate()}
+                  </p>
                 </div>
               </div>
 
@@ -354,7 +430,7 @@ export default function PayrollPage() {
                 </div>
                 <div>
                   <h5 className="font-semibold">Referencia</h5>
-                  <p>Número: REC-2025-0001</p>
+                  <p>Número: {generatedReport?.receipt_number || 'REC-PENDIENTE'}</p>
                   <p>Emitido por: Custom Srl</p>
                 </div>
               </div>
@@ -413,4 +489,6 @@ export default function PayrollPage() {
     </div>
   );
 }
+
+
 

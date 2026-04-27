@@ -15,6 +15,24 @@ type PaymentReceiptWithRelations = PaymentReceipt & {
   };
 };
 
+type PayrollReportArchive = {
+  generated_at?: string;
+  receipt_number: string;
+  issue_date: string;
+  crew: { id: string; name: string };
+  period: { start_date: string; end_date: string };
+  totals: { total_amount: number; days_worked: number; item_count: number };
+  entries: Array<{
+    date: string;
+    task_code: string;
+    description: string;
+    qty: number;
+    unit: string;
+    unit_price: number;
+    value: number;
+  }>;
+};
+
 export default function ComprobantePage() {
   const [receipts, setReceipts] = useState<PaymentReceiptWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,6 +89,17 @@ export default function ComprobantePage() {
     return matchesDateFrom && matchesDateTo;
   });
 
+  const parseArchivedReport = (notes?: string): PayrollReportArchive | null => {
+    if (!notes || !notes.startsWith('PAYROLL_REPORT::')) return null;
+    const raw = notes.slice('PAYROLL_REPORT::'.length);
+    try {
+      return JSON.parse(raw) as PayrollReportArchive;
+    } catch (error) {
+      console.warn('Failed to parse archived payroll report from receipt notes.', error);
+      return null;
+    }
+  };
+
   const exportToPDF = () => {
     if (!selectedReceipt) return;
     
@@ -79,6 +108,45 @@ export default function ComprobantePage() {
     if (!printWindow) return;
 
     const receipt = selectedReceipt;
+    const archivedReport = parseArchivedReport(receipt.notes);
+    const detailRows = archivedReport?.entries?.length
+      ? archivedReport.entries
+          .map(
+            (entry) => `
+              <tr>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;">${entry.date}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;">${entry.task_code} - ${entry.description}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:right;">${entry.qty}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;">${entry.unit}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:right;">$${entry.unit_price.toLocaleString()}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:right;">$${entry.value.toLocaleString()}</td>
+              </tr>
+            `
+          )
+          .join('')
+      : '';
+    const detailSection = detailRows
+      ? `
+        <div style="margin-top:20px;">
+          <h3>Detalle de cÃ¡lculo</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="background:#f3f3f3;">
+                <th style="padding:6px 4px;text-align:left;">Fecha</th>
+                <th style="padding:6px 4px;text-align:left;">Tarea</th>
+                <th style="padding:6px 4px;text-align:right;">Cant.</th>
+                <th style="padding:6px 4px;text-align:center;">Un.</th>
+                <th style="padding:6px 4px;text-align:right;">Precio</th>
+                <th style="padding:6px 4px;text-align:right;">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${detailRows}
+            </tbody>
+          </table>
+        </div>
+      `
+      : '';
     const html = `
       <!DOCTYPE html>
       <html lang="es">
@@ -192,6 +260,8 @@ export default function ComprobantePage() {
             <p>Comprobante de Pago</p>
           </div>
         </div>
+
+        ${detailSection}
 
         <div class="content">
           <div class="section">
@@ -376,6 +446,10 @@ export default function ComprobantePage() {
             </div>
             
             <div className="bg-white text-black p-6 rounded-lg">
+              {(() => {
+                const archivedReport = parseArchivedReport(selectedReceipt.notes);
+                return (
+                  <>
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h4 className="text-2xl font-bold">Custom Srl</h4>
@@ -429,6 +503,41 @@ export default function ComprobantePage() {
                   <p>Emitido por: Custom Srl</p>
                 </div>
               </div>
+
+              {archivedReport?.entries?.length ? (
+                <div className="mb-6">
+                  <h5 className="font-semibold mb-2">Detalle de cÃ¡lculo</h5>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border border-gray-200">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="px-2 py-1 text-left">Fecha</th>
+                          <th className="px-2 py-1 text-left">Tarea</th>
+                          <th className="px-2 py-1 text-right">Cant.</th>
+                          <th className="px-2 py-1 text-center">Un.</th>
+                          <th className="px-2 py-1 text-right">Precio</th>
+                          <th className="px-2 py-1 text-right">Valor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {archivedReport.entries.map((entry, index) => (
+                          <tr key={`${entry.date}-${entry.task_code}-${index}`} className="border-t border-gray-200">
+                            <td className="px-2 py-1">{entry.date}</td>
+                            <td className="px-2 py-1">{entry.task_code} - {entry.description}</td>
+                            <td className="px-2 py-1 text-right">{entry.qty}</td>
+                            <td className="px-2 py-1 text-center">{entry.unit}</td>
+                            <td className="px-2 py-1 text-right">${entry.unit_price.toLocaleString()}</td>
+                            <td className="px-2 py-1 text-right">${entry.value.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
+                  </>
+                );
+              })()}
 
               <div className="mt-8 flex justify-between">
                 <div className="text-center">

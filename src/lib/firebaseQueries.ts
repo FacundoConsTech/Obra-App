@@ -168,6 +168,31 @@ export const createCrew = async (crewData: {
   return docRef.id;
 };
 
+export const updateCrew = async (
+  id: string,
+  updates: {
+    name?: string;
+    foreman_name?: string;
+    foreman_contact?: string;
+    member_count?: number;
+    notes?: string;
+  }
+): Promise<void> => {
+  const docRef = doc(db, 'crews', id);
+  await updateDoc(docRef, {
+    ...updates,
+    updated_at: toTimestamp(new Date()),
+  });
+};
+
+export const deactivateCrew = async (id: string): Promise<void> => {
+  const docRef = doc(db, 'crews', id);
+  await updateDoc(docRef, {
+    active: false,
+    updated_at: toTimestamp(new Date()),
+  });
+};
+
 export const queueCreateCrew = (crewData: {
   name: string;
   foreman_name?: string;
@@ -511,6 +536,19 @@ export const createPayrollPeriod = async (periodData: Omit<PayrollPeriod, 'id' |
   return docRef.id;
 };
 
+export const queueCreatePayrollPeriod = (
+  periodData: Omit<PayrollPeriod, 'id' | 'created_at' | 'updated_at'>
+): QueuedWrite => {
+  const now = new Date();
+  const docRef = doc(collection(db, 'payrollPeriods'));
+  const commit = setDoc(docRef, {
+    ...periodData,
+    created_at: toTimestamp(now),
+    updated_at: toTimestamp(now),
+  });
+  return { id: docRef.id, commit };
+};
+
 // ============================================
 // PAYMENT RECEIPTS
 // ============================================
@@ -545,6 +583,17 @@ export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id
     created_at: toTimestamp(new Date()),
   });
   return docRef.id;
+};
+
+export const queueCreatePaymentReceipt = (
+  receiptData: Omit<PaymentReceipt, 'id' | 'created_at'>
+): QueuedWrite => {
+  const docRef = doc(collection(db, 'paymentReceipts'));
+  const commit = setDoc(docRef, {
+    ...receiptData,
+    created_at: toTimestamp(new Date()),
+  });
+  return { id: docRef.id, commit };
 };
 
 export const getCrewsByIds = async (crewIds: string[]): Promise<Crew[]> => {

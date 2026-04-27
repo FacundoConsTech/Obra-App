@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   getTasks,
+  getCrews,
   updateTask,
   getCurrentTaskPrice,
   getCurrentTaskPricesByTaskIds,
@@ -8,7 +9,7 @@ import {
   queueCreateTask,
   getDailyEntries,
 } from '../lib/firebaseQueries';
-import type { Task } from '../lib/firebaseQueries';
+import type { Task, Crew } from '../lib/firebaseQueries';
 import { getLocalISODate } from '../lib/dateUtils';
 
 type TaskWithProgress = Task & {
@@ -20,6 +21,7 @@ type TaskWithProgress = Task & {
 
 export default function PlannedPage() {
   const [tasks, setTasks] = useState<TaskWithProgress[]>([]);
+  const [crews, setCrews] = useState<Crew[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterRubro, setFilterRubro] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -59,10 +61,15 @@ export default function PlannedPage() {
 
    const loadTasks = async () => {
     try {
-      const [tasksData, entriesData] = await Promise.all([
+      const [tasksData, entriesData, crewsData] = await Promise.all([
         getTasks(),
         getDailyEntries(),
+        getCrews().catch((error) => {
+          console.error('Error loading crews for rubro selector:', error);
+          return [];
+        }),
       ]);
+      setCrews(crewsData);
 
       const completedByTask = entriesData.reduce<Record<string, number>>((acc, entry) => {
         acc[entry.task_id] = (acc[entry.task_id] || 0) + entry.qty;
@@ -118,6 +125,7 @@ export default function PlannedPage() {
   });
 
   const rubros = [...new Set(tasks.map(t => t.rubro))];
+  const crewRubros = [...new Set(crews.map((crew) => crew.name.trim()).filter(Boolean))];
 
   const getProgressColor = (progress: number) => {
     if (progress >= 100) return 'bg-green-500';
@@ -187,6 +195,10 @@ export default function PlannedPage() {
 
   const handleCreateTask = async () => {
     if (creatingTask) return;
+    if (crewRubros.length === 0) {
+      alert('Primero crea al menos una crew para poder seleccionar Rubro.');
+      return;
+    }
     if (!createForm.rubro.trim() || !createForm.task_code.trim() || !createForm.description.trim()) {
       alert('Completa Rubro, TaskID y Descripcion para guardar la tarea.');
       return;
@@ -304,12 +316,18 @@ export default function PlannedPage() {
           <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
             <h2 className="text-xl font-bold text-white mb-4">Crear Nueva Tarea</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <input
+              <select
                 value={createForm.rubro}
                 onChange={(e) => setCreateForm({ ...createForm, rubro: e.target.value })}
-                placeholder="Rubro"
                 className="bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
-              />
+              >
+                <option value="">Seleccionar Rubro (Crew)</option>
+                {crewRubros.map((rubro) => (
+                  <option key={rubro} value={rubro}>
+                    {rubro}
+                  </option>
+                ))}
+              </select>
               <input
                 value={createForm.task_code}
                 onChange={(e) => setCreateForm({ ...createForm, task_code: e.target.value })}
@@ -551,7 +569,6 @@ export default function PlannedPage() {
     </div>
   );
 }
-
 
 
 

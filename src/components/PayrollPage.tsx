@@ -3,10 +3,12 @@ import {
   getCrews, 
   getTasks,
   getDailyEntries, 
+  getPaymentReceipts,
+  getPayrollPeriodsByIds,
   getTaskPricesByTaskIds,
-  createPayrollPeriod,
+  queueCreatePayrollPeriod,
   generateReceiptNumber,
-  createPaymentReceipt,
+  queueCreatePaymentReceipt,
   type Crew
 } from '../lib/firebaseQueries';
 import { getLocalISODate } from '../lib/dateUtils';
@@ -48,7 +50,23 @@ export default function PayrollPage() {
   const [generatingReport, setGeneratingReport] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(null);
+  const [liquidatedAmount, setLiquidatedAmount] = useState(0);
   const hasLoadedRef = useRef(false);
+
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<T>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  };
 
   useEffect(() => {
     if (hasLoadedRef.current) return;
@@ -72,6 +90,7 @@ export default function PayrollPage() {
 
     setGeneratedReport(null);
     setShowReceipt(false);
+    setLiquidatedAmount(0);
     setCalculating(true);
     try {
       // Obtener entradas diarias del crew en el rango de fechas desde Firebase
@@ -134,10 +153,38 @@ export default function PayrollPage() {
         total_value: totalValue,
         days_worked: daysWorked,
       });
+      void refreshLiquidatedAmount(selectedCrew, dateFrom, dateTo);
     } catch (error) {
       console.error('Error calculating payroll:', error);
     } finally {
       setCalculating(false);
+    }
+  };
+
+  const refreshLiquidatedAmount = async (crewId: string, startDate: string, endDate: string) => {
+    try {
+      const receiptsData = await getPaymentReceipts();
+      if (receiptsData.length === 0) {
+        setLiquidatedAmount(0);
+        return;
+      }
+
+      const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
+      const periodsData = await getPayrollPeriodsByIds(periodIds);
+      const periodById = new Map(periodsData.map((period) => [period.id, period]));
+
+      const totalLiquidated = receiptsData.reduce((sum, receipt) => {
+        const period = periodById.get(receipt.payroll_period_id);
+        if (!period) return sum;
+        const sameCrew = period.crew_id === crewId;
+        const samePeriod = period.start_date === startDate && period.end_date === endDate;
+        return sameCrew && samePeriod ? sum + receipt.amount : sum;
+      }, 0);
+
+      setLiquidatedAmount(totalLiquidated);
+    } catch (error) {
+      console.error('Error loading liquidated amount:', error);
+      setLiquidatedAmount(0);
     }
   };
 
@@ -150,7 +197,7 @@ export default function PayrollPage() {
 
     try {
       setGeneratingReport(true);
-      const periodId = await createPayrollPeriod({
+      const queuedPeriod = queueCreatePayrollPeriod({
         crew_id: calculation.crew_id,
         start_date: calculation.start_date,
         end_date: calculation.end_date,
@@ -160,7 +207,7 @@ export default function PayrollPage() {
 
       let receiptNumber = '';
       try {
-        receiptNumber = await generateReceiptNumber();
+        receiptNumber = await withTimeout(generateReceiptNumber(), 10000, 'generateReceiptNumber');
       } catch (numberError) {
         console.warn('Could not generate sequential receipt number, using fallback.', numberError);
         const year = new Date().getFullYear();
@@ -168,28 +215,47 @@ export default function PayrollPage() {
       }
       const issueDate = getLocalISODate();
 
-      const receiptSummary = [
-        `Crew: ${calculation.crew_name}`,
-        `Periodo: ${calculation.start_date} a ${calculation.end_date}`,
-        `Jornadas: ${calculation.days_worked}`,
-        `Items: ${calculation.entries.length}`,
-        `Total: ${calculation.total_value}`,
-      ].join(' | ');
+      const reportCopy = {
+        generated_at: new Date().toISOString(),
+        receipt_number: receiptNumber,
+        issue_date: issueDate,
+        crew: {
+          id: calculation.crew_id,
+          name: calculation.crew_name,
+        },
+        period: {
+          start_date: calculation.start_date,
+          end_date: calculation.end_date,
+        },
+        totals: {
+          total_amount: calculation.total_value,
+          days_worked: calculation.days_worked,
+          item_count: calculation.entries.length,
+        },
+        entries: calculation.entries,
+      };
 
-      const receiptId = await createPaymentReceipt({
-        payroll_period_id: periodId,
+      const queuedReceipt = queueCreatePaymentReceipt({
+        payroll_period_id: queuedPeriod.id,
         number: receiptNumber,
         issue_date: issueDate,
         amount: calculation.total_value,
         currency: 'ARS',
-        notes: receiptSummary,
+        notes: `PAYROLL_REPORT::${JSON.stringify(reportCopy)}`,
       });
 
+      await withTimeout(
+        Promise.all([queuedPeriod.commit, queuedReceipt.commit]),
+        15000,
+        'emitPayrollReport'
+      );
+
       setGeneratedReport({
-        receipt_id: receiptId,
+        receipt_id: queuedReceipt.id,
         receipt_number: receiptNumber,
         issue_date: issueDate,
       });
+      await refreshLiquidatedAmount(calculation.crew_id, calculation.start_date, calculation.end_date);
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);
@@ -198,6 +264,10 @@ export default function PayrollPage() {
       setGeneratingReport(false);
     }
   };
+
+  const emittedAmount = calculation ? liquidatedAmount : 0;
+  const pendingAmount = calculation ? Math.max(0, calculation.total_value - emittedAmount) : 0;
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center">
@@ -292,6 +362,9 @@ export default function PayrollPage() {
                     ${calculation.total_value.toLocaleString()}
                   </div>
                   <div className="text-sm text-gray-400">Total a liquidar</div>
+                  <div className="text-xs text-gray-300 mt-1">
+                    Liquidado: ${emittedAmount.toLocaleString()} | Pendiente: ${pendingAmount.toLocaleString()}
+                  </div>
                   {generatedReport && (
                     <div className="text-xs mt-2 inline-block bg-green-700/40 text-green-200 px-2 py-1 rounded">
                       Liquidado / Informe emitido
@@ -483,6 +556,12 @@ export default function PayrollPage() {
               ${calculation ? calculation.total_value.toLocaleString() : '0'}
             </div>
             <div className="text-sm text-gray-400">Total Calculado</div>
+            <div className="text-xs text-gray-400 mt-2">
+              Liquidado: ${emittedAmount.toLocaleString()}
+            </div>
+            <div className="text-xs text-gray-400">
+              Pendiente: ${pendingAmount.toLocaleString()}
+            </div>
           </div>
         </div>
       </div>

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   getTasks, 
   getCrews, 
+  updateCrew,
+  deactivateCrew,
   queueCreateCrew,
   getDailyEntries, 
   queueCreateDailyEntry,
@@ -40,7 +42,17 @@ export default function DailyEntriesPage() {
   });
   const [showCrewForm, setShowCrewForm] = useState(false);
   const [savingCrew, setSavingCrew] = useState(false);
+  const [editingCrewId, setEditingCrewId] = useState<string | null>(null);
+  const [savingCrewEdit, setSavingCrewEdit] = useState(false);
+  const [deletingCrewId, setDeletingCrewId] = useState<string | null>(null);
   const [crewForm, setCrewForm] = useState({
+    name: '',
+    foreman_name: '',
+    foreman_contact: '',
+    member_count: '',
+    notes: '',
+  });
+  const [editCrewForm, setEditCrewForm] = useState({
     name: '',
     foreman_name: '',
     foreman_contact: '',
@@ -256,6 +268,123 @@ export default function DailyEntriesPage() {
     }
   };
 
+  const handleEditCrewStart = (crew: Crew) => {
+    setEditingCrewId(crew.id);
+    setEditCrewForm({
+      name: crew.name,
+      foreman_name: crew.foreman_name || '',
+      foreman_contact: crew.foreman_contact || '',
+      member_count: crew.member_count?.toString() || '',
+      notes: crew.notes || '',
+    });
+  };
+
+  const handleEditCrewCancel = () => {
+    setEditingCrewId(null);
+    setEditCrewForm({
+      name: '',
+      foreman_name: '',
+      foreman_contact: '',
+      member_count: '',
+      notes: '',
+    });
+  };
+
+  const handleEditCrewSave = async () => {
+    if (!editingCrewId || savingCrewEdit) return;
+    if (!editCrewForm.name.trim()) {
+      alert('El nombre de la crew es obligatorio.');
+      return;
+    }
+
+    const updates = {
+      name: editCrewForm.name.trim(),
+      foreman_name: editCrewForm.foreman_name.trim() || undefined,
+      foreman_contact: editCrewForm.foreman_contact.trim() || undefined,
+      member_count: editCrewForm.member_count ? parseInt(editCrewForm.member_count, 10) : undefined,
+      notes: editCrewForm.notes.trim() || undefined,
+    };
+
+    if (editCrewForm.member_count && Number.isNaN(updates.member_count)) {
+      alert('Integrantes debe ser un numero valido.');
+      return;
+    }
+
+    try {
+      setSavingCrewEdit(true);
+      await updateCrew(editingCrewId, updates);
+
+      setCrews((prev) =>
+        sortCrewsByName(
+          prev.map((crew) =>
+            crew.id === editingCrewId
+              ? {
+                  ...crew,
+                  ...updates,
+                  updated_at: new Date(),
+                }
+              : crew
+          )
+        )
+      );
+      handleEditCrewCancel();
+    } catch (error) {
+      console.error('Error updating crew:', error);
+      alert('No se pudo actualizar la crew.');
+    } finally {
+      setSavingCrewEdit(false);
+    }
+  };
+
+  const handleDeleteCrew = async (crew: Crew) => {
+    if (deletingCrewId) return;
+    if (!confirm(`Estas seguro de desactivar la crew "${crew.name}"?`)) return;
+
+    try {
+      setDeletingCrewId(crew.id);
+      await deactivateCrew(crew.id);
+      setCrews((prev) => prev.filter((item) => item.id !== crew.id));
+      setFormData((prev) => (prev.crew_id === crew.id ? { ...prev, crew_id: '' } : prev));
+      if (editingCrewId === crew.id) {
+        handleEditCrewCancel();
+      }
+    } catch (error) {
+      console.error('Error deactivating crew:', error);
+      alert('No se pudo desactivar la crew.');
+    } finally {
+      setDeletingCrewId(null);
+    }
+  };
+
+  const handleTaskSelect = (taskId: string) => {
+    const selectedTask = tasks.find((task) => task.id === taskId);
+    if (!selectedTask) {
+      setFormData((prev) => ({ ...prev, task_id: taskId }));
+      return;
+    }
+
+    const taskRubro = selectedTask.rubro?.trim().toLowerCase();
+    const relatedCrew =
+      crews.find((crew) => crew.name.trim().toLowerCase() === taskRubro) ||
+      null;
+    const latestEntryWithForeman = entries.find(
+      (entry) => entry.task_id === taskId && entry.foreman?.trim()
+    );
+
+    const autoUnit = selectedTask.unit || null;
+    const autoForeman =
+      relatedCrew?.foreman_name?.trim() ||
+      latestEntryWithForeman?.foreman?.trim() ||
+      '';
+
+    setFormData((prev) => ({
+      ...prev,
+      task_id: taskId,
+      unit: autoUnit || prev.unit,
+      foreman: autoForeman || prev.foreman,
+    }));
+  };
+
   const filteredTasks = tasks.filter(task => 
     !filterRubro || task.rubro === filterRubro
   );
@@ -336,7 +465,7 @@ export default function DailyEntriesPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">Tarea</label>
                   <select
                     value={formData.task_id}
-                    onChange={(e) => setFormData({...formData, task_id: e.target.value})}
+                    onChange={(e) => handleTaskSelect(e.target.value)}
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
                     required
                   >
@@ -615,9 +744,135 @@ export default function DailyEntriesPage() {
             </div>
           </div>
         )}
+
+        <div className="mt-6 bg-gray-800/30 backdrop-blur-sm rounded-2xl border border-gray-700 overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-700">
+            <h3 className="text-lg font-bold text-white">Crews Activas</h3>
+            <p className="text-sm text-gray-400">Listado y gestion de crews disponibles para entradas diarias</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-800/50">
+                <tr>
+                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Nombre</th>
+                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Capataz</th>
+                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Contacto</th>
+                  <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">Integrantes</th>
+                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Estado</th>
+                  <th className="px-6 py-4 text-center text-sm font-semibold text-gray-300">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {crews.map((crew) => {
+                  const isEditing = editingCrewId === crew.id;
+                  return (
+                    <tr key={crew.id} className="hover:bg-gray-800/30 transition-colors">
+                      <td className="px-6 py-4 text-sm text-gray-300">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editCrewForm.name}
+                            onChange={(e) => setEditCrewForm({ ...editCrewForm, name: e.target.value })}
+                            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm"
+                          />
+                        ) : (
+                          crew.name
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-300">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editCrewForm.foreman_name}
+                            onChange={(e) => setEditCrewForm({ ...editCrewForm, foreman_name: e.target.value })}
+                            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm"
+                          />
+                        ) : (
+                          crew.foreman_name || '—'
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-300">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editCrewForm.foreman_contact}
+                            onChange={(e) => setEditCrewForm({ ...editCrewForm, foreman_contact: e.target.value })}
+                            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm"
+                          />
+                        ) : (
+                          crew.foreman_contact || '—'
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-right text-sm text-gray-300">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={editCrewForm.member_count}
+                            onChange={(e) => setEditCrewForm({ ...editCrewForm, member_count: e.target.value })}
+                            className="w-20 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm text-right"
+                          />
+                        ) : (
+                          crew.member_count ?? '—'
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <span className="inline-block bg-green-600/20 text-green-300 border border-green-600/40 px-2 py-1 rounded text-xs font-semibold">
+                          Activa
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {isEditing ? (
+                          <div className="flex gap-2 justify-center">
+                            <button
+                              type="button"
+                              onClick={handleEditCrewSave}
+                              disabled={savingCrewEdit}
+                              className={`px-3 py-1 rounded text-sm text-white ${
+                                savingCrewEdit ? 'bg-green-800 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                              }`}
+                            >
+                              {savingCrewEdit ? 'Guardando...' : 'Guardar'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleEditCrewCancel}
+                              className="px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600 text-white"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2 justify-center">
+                            <button
+                              type="button"
+                              onClick={() => handleEditCrewStart(crew)}
+                              className="px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600 text-white"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCrew(crew)}
+                              disabled={deletingCrewId === crew.id}
+                              className={`px-3 py-1 rounded text-sm text-white ${
+                                deletingCrewId === crew.id
+                                  ? 'bg-red-800 cursor-not-allowed'
+                                  : 'bg-red-600 hover:bg-red-700'
+                              }`}
+                            >
+                              {deletingCrewId === crew.id ? 'Eliminando...' : 'Eliminar'}
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
-
-

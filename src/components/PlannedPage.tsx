@@ -92,7 +92,7 @@ export default function PlannedPage() {
 
       const tasksWithProgress = tasksData.map((task) => {
         const completed_qty = completedByTask[task.id] || 0;
-        const unit_price = currentPrices.get(task.id) ?? task.unit_price ?? null;
+        const unit_price = task.unit_price ?? currentPrices.get(task.id) ?? null;
         const completed_value = completed_qty * (unit_price ?? 0);
         const progress_pct =
           task.total_qty && task.total_qty > 0
@@ -167,6 +167,34 @@ export default function PlannedPage() {
 
       await updateTask(editingTask, updates);
 
+      setTasks((prev) =>
+        prev.map((task) => {
+          if (task.id !== editingTask) return task;
+
+          const nextTotalQty = updates.total_qty ?? task.total_qty;
+          const nextUnit = updates.unit ?? task.unit;
+          const nextUnitPrice = parsedUnitPrice !== null ? parsedUnitPrice : task.unit_price;
+          const nextCompletedValue = task.completed_qty * (nextUnitPrice ?? 0);
+          const nextProgressPct =
+            nextTotalQty && nextTotalQty > 0
+              ? Math.min(100, Math.round((task.completed_qty / nextTotalQty) * 100))
+              : 0;
+
+          return {
+            ...task,
+            total_qty: nextTotalQty,
+            unit: nextUnit,
+            unit_price: nextUnitPrice,
+            completed_value: nextCompletedValue,
+            progress_pct: nextProgressPct,
+            updated_at: new Date(),
+          };
+        })
+      );
+
+      setEditingTask(null);
+      setEditForm({ total_qty: '', unit: '', unit_price: '' });
+
       if (parsedUnitPrice !== null) {
         try {
           await createTaskPrice(editingTask, {
@@ -178,9 +206,6 @@ export default function PlannedPage() {
           console.warn('Task price history was not saved, keeping task unit_price', priceError);
         }
       }
-
-      setEditingTask(null);
-      setEditForm({ total_qty: '', unit: '', unit_price: '' });
       await loadTasks();
     } catch (error) {
       console.error('Error saving task:', error);
@@ -569,7 +594,4 @@ export default function PlannedPage() {
     </div>
   );
 }
-
-
-
 

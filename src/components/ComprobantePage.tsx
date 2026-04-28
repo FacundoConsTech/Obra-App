@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { 
-  getPaymentReceipts, 
+  getPaymentReceiptsList,
+  getPaymentReceipt,
   getPayrollPeriodsByIds,
   getCrewsByIds,
   type PaymentReceipt,
@@ -34,27 +35,98 @@ type PayrollReportArchive = {
 };
 
 export default function ComprobantePage() {
+  const DEBUG_TIMING = true;
+  const renderCountRef = useRef(0);
+  const mountStartRef = useRef<number | null>(null);
+  const loadStartRef = useRef<number | null>(null);
+  const loadRunRef = useRef(0);
+  const effectRunRef = useRef(0);
   const [receipts, setReceipts] = useState<PaymentReceiptWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentReceiptWithRelations | null>(null);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const hasLoadedRef = useRef(false);
+  renderCountRef.current += 1;
+  if (DEBUG_TIMING && mountStartRef.current === null) {
+    mountStartRef.current = performance.now();
+    console.info('[Comprobantes][timing] mount start');
+  }
 
   useEffect(() => {
+    effectRunRef.current += 1;
+    if (DEBUG_TIMING) {
+      console.info('[Comprobantes][timing] mount effect run', {
+        effectRun: effectRunRef.current,
+        hasLoaded: hasLoadedRef.current,
+      });
+    }
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
     loadReceipts();
   }, []);
 
-  const loadReceipts = async () => {
-    try {
-      const receiptsData = await getPaymentReceipts();
-      const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
-      const periodsData = await getPayrollPeriodsByIds(periodIds);
-      const crewIds = [...new Set(periodsData.map((period) => period.crew_id))];
-      const crewsData = await getCrewsByIds(crewIds);
+  useEffect(() => {
+    if (!DEBUG_TIMING) return;
+    if (!loading) {
+      const now = performance.now();
+      const mountMs = mountStartRef.current ? now - mountStartRef.current : null;
+      const loadMs = loadStartRef.current ? now - loadStartRef.current : null;
+      console.info('[Comprobantes][timing] first usable render', {
+        receipts: receipts.length,
+        renderCount: renderCountRef.current,
+        mountToUsableMs: mountMs ? Number(mountMs.toFixed(1)) : null,
+        loadToUsableMs: loadMs ? Number(loadMs.toFixed(1)) : null,
+      });
+    }
+  }, [loading, receipts.length]);
 
+  const loadReceipts = async () => {
+    loadRunRef.current += 1;
+    loadStartRef.current = performance.now();
+    const runId = loadRunRef.current;
+    if (DEBUG_TIMING) {
+      console.info('[Comprobantes][timing] loadReceipts start', { runId });
+    }
+
+    const t0 = performance.now();
+    try {
+      const tReceipts0 = performance.now();
+      const receiptsData = await getPaymentReceiptsList();
+      const tReceipts1 = performance.now();
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] receipts query done', {
+          runId,
+          count: receiptsData.length,
+          ms: Number((tReceipts1 - tReceipts0).toFixed(1)),
+        });
+      }
+      const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
+      const tPeriods0 = performance.now();
+      const periodsData = await getPayrollPeriodsByIds(periodIds);
+      const tPeriods1 = performance.now();
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] payroll periods query done', {
+          runId,
+          requestedIds: periodIds.length,
+          returned: periodsData.length,
+          ms: Number((tPeriods1 - tPeriods0).toFixed(1)),
+        });
+      }
+      const crewIds = [...new Set(periodsData.map((period) => period.crew_id))];
+      const tCrews0 = performance.now();
+      const crewsData = await getCrewsByIds(crewIds);
+      const tCrews1 = performance.now();
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] crews query done', {
+          runId,
+          requestedIds: crewIds.length,
+          returned: crewsData.length,
+          ms: Number((tCrews1 - tCrews0).toFixed(1)),
+        });
+      }
+
+      const tMerge0 = performance.now();
       const periodById = new Map(periodsData.map((period) => [period.id, period]));
       const crewById = new Map(crewsData.map((crew) => [crew.id, crew]));
 
@@ -73,12 +145,57 @@ export default function ComprobantePage() {
           } as PaymentReceiptWithRelations;
         })
         .filter((receipt): receipt is PaymentReceiptWithRelations => receipt !== null);
+      const tMerge1 = performance.now();
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] relation merge done', {
+          runId,
+          merged: receiptsWithRelations.length,
+          ms: Number((tMerge1 - tMerge0).toFixed(1)),
+        });
+      }
 
+      const tSet0 = performance.now();
       setReceipts(receiptsWithRelations);
+      const tSet1 = performance.now();
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] state set scheduled', {
+          runId,
+          ms: Number((tSet1 - tSet0).toFixed(3)),
+        });
+        console.info('[Comprobantes][timing] loadReceipts total done', {
+          runId,
+          ms: Number((tSet1 - t0).toFixed(1)),
+        });
+      }
     } catch (error) {
       console.error('Error loading receipts:', error);
     } finally {
+      if (DEBUG_TIMING) {
+        console.info('[Comprobantes][timing] loading=false', {
+          runId,
+          totalMs: Number((performance.now() - t0).toFixed(1)),
+        });
+      }
       setLoading(false);
+    }
+  };
+
+  const handleSelectReceipt = async (receipt: PaymentReceiptWithRelations) => {
+    try {
+      const fullReceipt = await getPaymentReceipt(receipt.id);
+      if (!fullReceipt) {
+        setSelectedReceipt(receipt);
+        return;
+      }
+
+      setSelectedReceipt({
+        ...receipt,
+        ...fullReceipt,
+        payroll_period: receipt.payroll_period,
+      });
+    } catch (error) {
+      console.error('Error loading receipt detail:', error);
+      setSelectedReceipt(receipt);
     }
   };
 
@@ -419,7 +536,7 @@ export default function ComprobantePage() {
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button
-                        onClick={() => setSelectedReceipt(receipt)}
+                        onClick={() => handleSelectReceipt(receipt)}
                         className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                       >
                         Ver

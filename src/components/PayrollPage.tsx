@@ -93,7 +93,7 @@ export default function PayrollPage() {
     setLiquidatedAmount(0);
     setCalculating(true);
     try {
-      // Obtener entradas diarias del crew en el rango de fechas desde Firebase
+      // Obtener entradas diarias del crew en el rango de fechas
       const entriesData = await getDailyEntries({
         crewId: selectedCrew,
         dateFrom,
@@ -259,7 +259,7 @@ export default function PayrollPage() {
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);
-      alert('No se pudo emitir el informe. Revisa permisos/reglas de Firebase.');
+      alert('No se pudo emitir el informe. Verifica la conexión y la configuración de base de datos.');
     } finally {
       setGeneratingReport(false);
     }

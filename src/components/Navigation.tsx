@@ -5,9 +5,10 @@ type Page = 'planned' | 'daily' | 'payroll' | 'receipt';
 type NavigationProps = {
   currentPage: Page;
   onPageChange: (page: Page) => void;
+  onLogout?: () => void;
 };
 
-export default function Navigation({ currentPage, onPageChange }: NavigationProps) {
+export default function Navigation({ currentPage, onPageChange, onLogout }: NavigationProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   const pages = [
@@ -42,6 +43,14 @@ export default function Navigation({ currentPage, onPageChange }: NavigationProp
                 {page.name}
               </button>
             ))}
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="ml-2 px-4 py-2 rounded-lg font-semibold text-gray-300 hover:text-white hover:bg-gray-800/50 transition-colors"
+              >
+                Cerrar SesiÃ³n
+              </button>
+            )}
           </div>
 
           {/* Mobile Menu Button */}
@@ -78,6 +87,17 @@ export default function Navigation({ currentPage, onPageChange }: NavigationProp
                   {page.name}
                 </button>
               ))}
+              {onLogout && (
+                <button
+                  onClick={() => {
+                    onLogout();
+                    setIsOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-3 rounded-lg font-semibold text-gray-300 hover:text-white hover:bg-gray-800/50 transition-colors"
+                >
+                  Cerrar SesiÃ³n
+                </button>
+              )}
             </div>
           </div>
         )}

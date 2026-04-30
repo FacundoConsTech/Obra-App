@@ -4,7 +4,7 @@
 
 1. ✅ Instalado Firebase SDK
 2. ✅ Creado configuración de Firebase (`src/lib/firebase.ts`)
-3. ✅ Creado funciones de acceso a datos (`src/lib/firebaseQueries.ts`)
+3. ✅ Creado funciones de acceso a datos (`src/lib/supabaseQueries.ts`)
 4. ✅ Actualizado `PlannedPage.tsx` - Usa Firebase
 5. ✅ Actualizado `DailyEntriesPage.tsx` - Usa Firebase + función borrar
 6. ✅ Actualizado `PayrollPage.tsx` - Usa Firebase

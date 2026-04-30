@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { supabase } from '../lib/supabase';
 
 export default function LoginPage() {
@@ -19,7 +19,7 @@ export default function LoginPage() {
     });
 
     if (signInError) {
-      setError(signInError.message || 'No se pudo iniciar sesiÃ³n.');
+      setError(signInError.message || 'No se pudo iniciar sesión.');
     }
     setLoading(false);
   };
@@ -30,8 +30,8 @@ export default function LoginPage() {
         onSubmit={handleLogin}
         className="w-full max-w-md bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700"
       >
-        <h1 className="text-2xl font-bold text-white mb-2">Iniciar SesiÃ³n</h1>
-        <p className="text-gray-400 mb-6">Accede con tu email y contraseÃ±a.</p>
+        <h1 className="text-2xl font-bold text-white mb-2">Iniciar Sesión</h1>
+        <p className="text-gray-400 mb-6">Accede con tu email y contraseña.</p>
 
         <div className="space-y-4">
           <input
@@ -46,7 +46,7 @@ export default function LoginPage() {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="ContraseÃ±a"
+            placeholder="Contraseña"
             className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
             required
           />
@@ -67,4 +67,3 @@ export default function LoginPage() {
     </div>
   );
 }
-

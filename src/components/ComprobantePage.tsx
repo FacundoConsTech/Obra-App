@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { 
+import {
   getPaymentReceiptsList,
   getPaymentReceipt,
   getPayrollPeriodsByIds,
@@ -7,8 +7,10 @@ import {
   type PaymentReceipt,
   type PayrollPeriod,
   type Crew
-} from '../lib/firebaseQueries';
-import { getLocalISODate } from '../lib/dateUtils';
+} from '../lib/supabaseQueries';
+import { formatDateLatam, getLocalISODate } from '../lib/dateUtils';
+import LatamDateInput from './LatamDateInput';
+import { loadIssuerProfile, saveIssuerProfile, getEmptyIssuerProfile, type IssuerProfile } from '../lib/issuerProfile';
 
 type PaymentReceiptWithRelations = PaymentReceipt & {
   payroll_period: PayrollPeriod & {
@@ -46,6 +48,8 @@ export default function ComprobantePage() {
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentReceiptWithRelations | null>(null);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
+  const [savingIssuerProfile, setSavingIssuerProfile] = useState(false);
   const hasLoadedRef = useRef(false);
   renderCountRef.current += 1;
   if (DEBUG_TIMING && mountStartRef.current === null) {
@@ -64,6 +68,18 @@ export default function ComprobantePage() {
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
     loadReceipts();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadIssuerProfile()
+      .then((profile) => {
+        if (active) setIssuerProfile(profile);
+      })
+      .catch((error) => console.error('Error loading issuer profile:', error));
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -217,6 +233,19 @@ export default function ComprobantePage() {
     }
   };
 
+  const handleSaveIssuerProfile = async () => {
+    try {
+      setSavingIssuerProfile(true);
+      await saveIssuerProfile(issuerProfile);
+      alert('Datos del emisor guardados.');
+    } catch (error) {
+      console.error('Error saving issuer profile:', error);
+      alert('No se pudieron guardar los datos del emisor.');
+    } finally {
+      setSavingIssuerProfile(false);
+    }
+  };
+
   const exportToPDF = () => {
     if (!selectedReceipt) return;
     
@@ -231,7 +260,7 @@ export default function ComprobantePage() {
           .map(
             (entry) => `
               <tr>
-                <td style="padding:6px 4px;border-bottom:1px solid #eee;">${entry.date}</td>
+                <td style="padding:6px 4px;border-bottom:1px solid #eee;">${formatDateLatam(entry.date)}</td>
                 <td style="padding:6px 4px;border-bottom:1px solid #eee;">${entry.task_code} - ${entry.description}</td>
                 <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:right;">${entry.qty}</td>
                 <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;">${entry.unit}</td>
@@ -245,7 +274,7 @@ export default function ComprobantePage() {
     const detailSection = detailRows
       ? `
         <div style="margin-top:20px;">
-          <h3>Detalle de cÃ¡lculo</h3>
+          <h3>Detalle de cálculo</h3>
           <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead>
               <tr style="background:#f3f3f3;">
@@ -365,15 +394,14 @@ export default function ComprobantePage() {
       <body>
         <div class="header">
           <div class="company-info">
-            <h1>Custom Srl</h1>
-            <p>CUIL: 30-71538812-6</p>
-            <p>Tucuman 2647</p>
-            <p>0341 525-2476</p>
-            <p>info@customarquitectos.com.ar</p>
+            <h1>${issuerProfile.company_name || '—'}</h1>
+            <p>CUIL/CUIT: ${issuerProfile.cuit_cuil || '—'}</p>
+            <p>${issuerProfile.address || '—'}</p>
+            <p>${issuerProfile.phone || '—'}</p>
           </div>
           <div class="receipt-info">
             <p class="receipt-number">${receipt.number}</p>
-            <p>Fecha: ${new Date(receipt.created_at).toLocaleDateString()}</p>
+            <p>Fecha: ${formatDateLatam(receipt.created_at)}</p>
             <p>Comprobante de Pago</p>
           </div>
         </div>
@@ -385,7 +413,7 @@ export default function ComprobantePage() {
             <h3>Receptor</h3>
             <p><strong>Crew:</strong> ${receipt.payroll_period.crew.name}</p>
             <p><strong>Capataz:</strong> ${receipt.payroll_period.crew.foreman_name || 'No especificado'}</p>
-            <p><strong>Período:</strong> ${receipt.payroll_period.start_date} a ${receipt.payroll_period.end_date}</p>
+            <p><strong>Período:</strong> ${formatDateLatam(receipt.payroll_period.start_date)} a ${formatDateLatam(receipt.payroll_period.end_date)}</p>
           </div>
           <div class="section">
             <h3>Obra</h3>
@@ -417,8 +445,8 @@ export default function ComprobantePage() {
           <div class="section">
             <h3>Referencia</h3>
             <p><strong>Número:</strong> ${receipt.number}</p>
-            <p><strong>Emitido por:</strong> Custom Srl</p>
-            <p><strong>Fecha de emisión:</strong> ${new Date(receipt.created_at).toLocaleDateString()}</p>
+            <p><strong>Emitido por:</strong> ${issuerProfile.company_name || '—'}</p>
+            <p><strong>Fecha de emisión:</strong> ${formatDateLatam(receipt.created_at)}</p>
           </div>
         </div>
 
@@ -474,24 +502,77 @@ export default function ComprobantePage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
+          <h3 className="text-lg font-semibold text-white mb-4">Datos del emisor en comprobantes</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Empresa / Emisor</label>
+              <input
+                value={issuerProfile.company_name}
+                onChange={(e) => setIssuerProfile((prev) => ({ ...prev, company_name: e.target.value }))}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
+                placeholder="Ej: Mi Empresa SRL"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">CUIT/CUIL</label>
+              <input
+                value={issuerProfile.cuit_cuil}
+                onChange={(e) => setIssuerProfile((prev) => ({ ...prev, cuit_cuil: e.target.value }))}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
+                placeholder="Ej: 30-12345678-9"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Dirección</label>
+              <input
+                value={issuerProfile.address}
+                onChange={(e) => setIssuerProfile((prev) => ({ ...prev, address: e.target.value }))}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
+                placeholder="Ej: Calle 123, Ciudad"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Teléfono</label>
+              <input
+                value={issuerProfile.phone}
+                onChange={(e) => setIssuerProfile((prev) => ({ ...prev, phone: e.target.value }))}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
+                placeholder="Ej: +54 9 ..."
+              />
+            </div>
+          </div>
+          <div className="mt-4">
+            <button
+              onClick={handleSaveIssuerProfile}
+              disabled={savingIssuerProfile}
+              className={`px-5 py-2 rounded-lg font-semibold transition-colors ${
+                savingIssuerProfile
+                  ? 'bg-gray-600 text-gray-300 cursor-not-allowed'
+                  : 'bg-white text-black hover:bg-gray-100'
+              }`}
+            >
+              {savingIssuerProfile ? 'Guardando...' : 'Guardar datos del emisor'}
+            </button>
+          </div>
+        </div>
+
         {/* Filtros */}
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Desde</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={filterDateFrom}
-                onChange={(e) => setFilterDateFrom(e.target.value)}
+                onChange={setFilterDateFrom}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Hasta</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={filterDateTo}
-                onChange={(e) => setFilterDateTo(e.target.value)}
+                onChange={setFilterDateTo}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
@@ -526,13 +607,13 @@ export default function ComprobantePage() {
                     <td className="px-6 py-4 text-sm text-gray-300 font-mono">{receipt.number}</td>
                     <td className="px-6 py-4 text-sm text-gray-300">{receipt.payroll_period.crew.name}</td>
                     <td className="px-6 py-4 text-sm text-gray-300">
-                      {receipt.payroll_period.start_date} a {receipt.payroll_period.end_date}
+                      {formatDateLatam(receipt.payroll_period.start_date)} a {formatDateLatam(receipt.payroll_period.end_date)}
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-gray-300">
                       ${receipt.amount.toLocaleString()}
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-300">
-                      {new Date(receipt.created_at).toLocaleDateString()}
+                      {formatDateLatam(receipt.created_at)}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button
@@ -569,14 +650,14 @@ export default function ComprobantePage() {
                   <>
               <div className="flex justify-between items-start mb-6">
                 <div>
-                  <h4 className="text-2xl font-bold">Custom Srl</h4>
-                  <p className="text-gray-600">CUIL: 30-71538812-6</p>
-                  <p className="text-gray-600">Tucuman 2647</p>
-                  <p className="text-gray-600">0341 525-2476</p>
+                  <h4 className="text-2xl font-bold">{issuerProfile.company_name || '—'}</h4>
+                  <p className="text-gray-600">CUIL/CUIT: {issuerProfile.cuit_cuil || '—'}</p>
+                  <p className="text-gray-600">{issuerProfile.address || '—'}</p>
+                  <p className="text-gray-600">{issuerProfile.phone || '—'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-semibold">{selectedReceipt.number}</p>
-                  <p className="text-gray-600">Fecha: {new Date(selectedReceipt.created_at).toLocaleDateString()}</p>
+                  <p className="text-gray-600">Fecha: {formatDateLatam(selectedReceipt.created_at)}</p>
                 </div>
               </div>
 
@@ -585,7 +666,7 @@ export default function ComprobantePage() {
                   <h5 className="font-semibold">Receptor</h5>
                   <p>Crew: {selectedReceipt.payroll_period.crew.name}</p>
                   <p>Capataz: {selectedReceipt.payroll_period.crew.foreman_name || 'No especificado'}</p>
-                  <p>Período: {selectedReceipt.payroll_period.start_date} a {selectedReceipt.payroll_period.end_date}</p>
+                  <p>Período: {formatDateLatam(selectedReceipt.payroll_period.start_date)} a {formatDateLatam(selectedReceipt.payroll_period.end_date)}</p>
                 </div>
                 <div>
                   <h5 className="font-semibold">Obra</h5>
@@ -617,13 +698,13 @@ export default function ComprobantePage() {
                 <div>
                   <h5 className="font-semibold">Referencia</h5>
                   <p>Número: {selectedReceipt.number}</p>
-                  <p>Emitido por: Custom Srl</p>
+                  <p>Emitido por: {issuerProfile.company_name || '—'}</p>
                 </div>
               </div>
 
               {archivedReport?.entries?.length ? (
                 <div className="mb-6">
-                  <h5 className="font-semibold mb-2">Detalle de cÃ¡lculo</h5>
+                  <h5 className="font-semibold mb-2">Detalle de cálculo</h5>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm border border-gray-200">
                       <thead className="bg-gray-100">
@@ -639,7 +720,7 @@ export default function ComprobantePage() {
                       <tbody>
                         {archivedReport.entries.map((entry, index) => (
                           <tr key={`${entry.date}-${entry.task_code}-${index}`} className="border-t border-gray-200">
-                            <td className="px-2 py-1">{entry.date}</td>
+                            <td className="px-2 py-1">{formatDateLatam(entry.date)}</td>
                             <td className="px-2 py-1">{entry.task_code} - {entry.description}</td>
                             <td className="px-2 py-1 text-right">{entry.qty}</td>
                             <td className="px-2 py-1 text-center">{entry.unit}</td>

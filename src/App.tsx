@@ -43,7 +43,13 @@ export default function App() {
   }, []);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    if (error) {
+      console.error('Error closing session:', error);
+      return;
+    }
+    // Ensure UI returns to login immediately even if auth event arrives late.
+    setSession(null);
   };
 
   if (authLoading) {

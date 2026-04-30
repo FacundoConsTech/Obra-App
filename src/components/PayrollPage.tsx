@@ -1,17 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
-import { 
+import {
   getCrews, 
   getTasks,
   getDailyEntries, 
   getPaymentReceipts,
   getPayrollPeriodsByIds,
   getTaskPricesByTaskIds,
+  getLiquidatedQtyByCrewTaskIds,
   queueCreatePayrollPeriod,
   generateReceiptNumber,
   queueCreatePaymentReceipt,
+  queueCreatePayrollLiquidationItem,
   type Crew
-} from '../lib/firebaseQueries';
-import { getLocalISODate } from '../lib/dateUtils';
+} from '../lib/supabaseQueries';
+import { formatDateLatam, getLocalISODate } from '../lib/dateUtils';
+import LatamDateInput from './LatamDateInput';
+import { loadIssuerProfile, getEmptyIssuerProfile, type IssuerProfile } from '../lib/issuerProfile';
 
 type PayrollEntry = {
   date: string;
@@ -29,8 +33,20 @@ type PayrollCalculation = {
   start_date: string;
   end_date: string;
   entries: PayrollEntry[];
+  task_summaries: PayrollTaskSummary[];
   total_value: number;
   days_worked: number;
+};
+
+type PayrollTaskSummary = {
+  task_id: string;
+  task_code: string;
+  description: string;
+  unit: string;
+  unit_price: number;
+  executed_qty: number;
+  liquidated_qty: number;
+  pending_qty: number;
 };
 
 type GeneratedReport = {
@@ -51,6 +67,7 @@ export default function PayrollPage() {
   const [showReceipt, setShowReceipt] = useState(false);
   const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(null);
   const [liquidatedAmount, setLiquidatedAmount] = useState(0);
+  const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
   const hasLoadedRef = useRef(false);
 
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string) => {
@@ -72,6 +89,18 @@ export default function PayrollPage() {
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
     loadCrews();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadIssuerProfile()
+      .then((profile) => {
+        if (active) setIssuerProfile(profile);
+      })
+      .catch((error) => console.error('Error loading issuer profile:', error));
+    return () => {
+      active = false;
+    };
   }, []);
 
   const loadCrews = async () => {
@@ -106,6 +135,24 @@ export default function PayrollPage() {
         getTasks(),
         getTaskPricesByTaskIds(uniqueTaskIds, dateTo),
       ]);
+      const liquidatedQtyByTaskId = await getLiquidatedQtyByCrewTaskIds(
+        selectedCrew,
+        uniqueTaskIds,
+        dateTo
+      );
+      console.log('[Payroll][Ledger][Read] lookup context', {
+        crew_id: selectedCrew,
+        task_ids: uniqueTaskIds,
+        date_from: dateFrom,
+        date_to: dateTo,
+      });
+      console.log('[Payroll][Ledger][Read] result', {
+        map_size: liquidatedQtyByTaskId.size,
+        entries: Array.from(liquidatedQtyByTaskId.entries()).map(([task_id, liquidated_qty]) => ({
+          task_id,
+          liquidated_qty,
+        })),
+      });
 
       const taskById = new Map(
         tasksData
@@ -140,6 +187,33 @@ export default function PayrollPage() {
         };
       });
 
+      const executedQtyByTaskId = new Map<string, number>();
+      for (const entry of entriesData) {
+        const current = executedQtyByTaskId.get(entry.task_id) || 0;
+        executedQtyByTaskId.set(entry.task_id, current + entry.qty);
+      }
+
+      const taskSummaries: PayrollTaskSummary[] = uniqueTaskIds.map((taskId) => {
+        const task = taskById.get(taskId);
+        const executedQty = executedQtyByTaskId.get(taskId) || 0;
+        const liquidatedQty = liquidatedQtyByTaskId.get(taskId) || 0;
+        const pendingQty = Math.max(0, executedQty - liquidatedQty);
+        const sampleEntry = entriesData.find((entry) => entry.task_id === taskId);
+        const unit = sampleEntry?.unit || task?.unit || '';
+        const unitPrice = getPriceForDate(taskId, dateTo);
+
+        return {
+          task_id: taskId,
+          task_code: task?.task_code || '',
+          description: task?.description || '',
+          unit,
+          unit_price: unitPrice,
+          executed_qty: executedQty,
+          liquidated_qty: liquidatedQty,
+          pending_qty: pendingQty,
+        };
+      });
+
       const crew = crews.find(c => c.id === selectedCrew);
       const totalValue = entriesWithPrices.reduce((sum, entry) => sum + entry.value, 0);
       const daysWorked = new Set(entriesWithPrices.map(e => e.date)).size;
@@ -150,6 +224,7 @@ export default function PayrollPage() {
         start_date: dateFrom,
         end_date: dateTo,
         entries: entriesWithPrices,
+        task_summaries: taskSummaries,
         total_value: totalValue,
         days_worked: daysWorked,
       });
@@ -244,8 +319,43 @@ export default function PayrollPage() {
         notes: `PAYROLL_REPORT::${JSON.stringify(reportCopy)}`,
       });
 
+      const queuedLiquidationItems = calculation.task_summaries
+        .filter((summary) => summary.pending_qty > 0)
+        .map((summary) =>
+          queueCreatePayrollLiquidationItem({
+            payroll_period_id: queuedPeriod.id,
+            receipt_id: queuedReceipt.id,
+            crew_id: calculation.crew_id,
+            task_id: summary.task_id,
+            liquidated_qty: summary.pending_qty,
+            unit: (summary.unit || 'u') as 'm3' | 'ml' | 'm2' | 'u',
+            unit_price: summary.unit_price,
+            currency: 'ARS',
+            line_amount: summary.pending_qty * summary.unit_price,
+            executed_qty_snapshot: summary.executed_qty,
+            pending_qty_snapshot: summary.pending_qty,
+            as_of_date: calculation.end_date,
+          })
+        );
+      console.log(
+        '[Payroll][Ledger][Write] queued liquidation items',
+        queuedLiquidationItems.length,
+        calculation.task_summaries
+          .filter((summary) => summary.pending_qty > 0)
+          .map((summary) => ({
+            crew_id: calculation.crew_id,
+            task_id: summary.task_id,
+            as_of_date: calculation.end_date,
+            liquidated_qty: summary.pending_qty,
+          }))
+      );
+
       await withTimeout(
-        Promise.all([queuedPeriod.commit, queuedReceipt.commit]),
+        Promise.all([
+          queuedPeriod.commit,
+          queuedReceipt.commit,
+          ...queuedLiquidationItems.map((item) => item.commit),
+        ]),
         15000,
         'emitPayrollReport'
       );
@@ -266,7 +376,13 @@ export default function PayrollPage() {
   };
 
   const emittedAmount = calculation ? liquidatedAmount : 0;
-  const pendingAmount = calculation ? Math.max(0, calculation.total_value - emittedAmount) : 0;
+  const pendingTaskSummaries = calculation
+    ? calculation.task_summaries.filter((task) => task.pending_qty > 0)
+    : [];
+  const pendingLiquidationTotal = pendingTaskSummaries.reduce(
+    (sum, task) => sum + task.pending_qty * task.unit_price,
+    0
+  );
 
   if (loading) {
     return (
@@ -312,20 +428,18 @@ export default function PayrollPage() {
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Desde</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={setDateFrom}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Hasta</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={setDateTo}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
@@ -354,16 +468,16 @@ export default function PayrollPage() {
                 <div>
                   <h3 className="text-xl font-bold text-white">{calculation.crew_name}</h3>
                   <p className="text-gray-400">
-                    {calculation.start_date} a {calculation.end_date}
+                    {formatDateLatam(calculation.start_date)} a {formatDateLatam(calculation.end_date)}
                   </p>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-white">
-                    ${calculation.total_value.toLocaleString()}
+                    ${pendingLiquidationTotal.toLocaleString()}
                   </div>
-                  <div className="text-sm text-gray-400">Total a liquidar</div>
+                  <div className="text-sm text-gray-400">A liquidar</div>
                   <div className="text-xs text-gray-300 mt-1">
-                    Liquidado: ${emittedAmount.toLocaleString()} | Pendiente: ${pendingAmount.toLocaleString()}
+                    Ya liquidado: ${emittedAmount.toLocaleString()}
                   </div>
                   {generatedReport && (
                     <div className="text-xs mt-2 inline-block bg-green-700/40 text-green-200 px-2 py-1 rounded">
@@ -378,43 +492,75 @@ export default function PayrollPage() {
               <table className="w-full">
                 <thead className="bg-gray-800/50">
                   <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Fecha</th>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Tarea</th>
-                    <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">Cantidad</th>
+                    <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">Cantidad pendiente</th>
                     <th className="px-6 py-4 text-center text-sm font-semibold text-gray-300">Unidad</th>
                     <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">Precio</th>
                     <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">Valor</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-700">
-                  {calculation.entries.map((entry, index) => (
-                    <tr key={index} className="hover:bg-gray-800/30 transition-colors">
-                      <td className="px-6 py-4 text-sm text-gray-300">{entry.date}</td>
+                  {pendingTaskSummaries.map((task) => (
+                    <tr key={task.task_id} className="hover:bg-gray-800/30 transition-colors">
                       <td className="px-6 py-4 text-sm text-gray-300">
-                        {entry.task_code} - {entry.description}
+                        {task.task_code} - {task.description}
                       </td>
-                      <td className="px-6 py-4 text-right text-sm text-gray-300">{entry.qty}</td>
-                      <td className="px-6 py-4 text-center text-sm text-gray-300">{entry.unit}</td>
+                      <td className="px-6 py-4 text-right text-sm text-gray-300">{task.pending_qty}</td>
+                      <td className="px-6 py-4 text-center text-sm text-gray-300">{task.unit || '-'}</td>
                       <td className="px-6 py-4 text-right text-sm text-gray-300">
-                        ${entry.unit_price.toLocaleString()}
+                        ${task.unit_price.toLocaleString()}
                       </td>
                       <td className="px-6 py-4 text-right text-sm text-gray-300">
-                        ${entry.value.toLocaleString()}
+                        ${(task.pending_qty * task.unit_price).toLocaleString()}
                       </td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot className="bg-gray-800/50">
                   <tr>
-                    <td colSpan={5} className="px-6 py-4 text-right text-sm font-semibold text-gray-300">
-                      Total del período
+                    <td colSpan={4} className="px-6 py-4 text-right text-sm font-semibold text-gray-300">
+                      Total a liquidar
                     </td>
                     <td className="px-6 py-4 text-right text-sm font-bold text-white">
-                      ${calculation.total_value.toLocaleString()}
+                      ${pendingLiquidationTotal.toLocaleString()}
                     </td>
                   </tr>
                 </tfoot>
               </table>
+            </div>
+
+            <div className="p-6 border-t border-gray-700">
+              <h4 className="text-lg font-semibold text-white mb-3">Resumen por tarea</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-800/50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-300">Tarea</th>
+                      <th className="px-4 py-3 text-center text-sm font-semibold text-gray-300">Unidad</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">Precio</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">Ejecutado</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">Liquidado</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">Pendiente</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-700">
+                    {pendingTaskSummaries.map((task) => (
+                      <tr key={task.task_id} className="hover:bg-gray-800/30 transition-colors">
+                        <td className="px-4 py-3 text-sm text-gray-300">
+                          {task.task_code} - {task.description}
+                        </td>
+                        <td className="px-4 py-3 text-center text-sm text-gray-300">{task.unit || '-'}</td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">
+                          ${task.unit_price.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">{task.executed_qty}</td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">{task.liquidated_qty}</td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-white">{task.pending_qty}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="p-6 border-t border-gray-700">
@@ -453,17 +599,17 @@ export default function PayrollPage() {
             <div className="bg-white text-black p-6 rounded-lg">
               <div className="flex justify-between items-start mb-6">
                 <div>
-                  <h4 className="text-2xl font-bold">Custom Srl</h4>
-                  <p className="text-gray-600">CUIL: 30-71538812-6</p>
-                  <p className="text-gray-600">Tucuman 2647</p>
-                  <p className="text-gray-600">0341 525-2476</p>
+                  <h4 className="text-2xl font-bold">{issuerProfile.company_name || '—'}</h4>
+                  <p className="text-gray-600">CUIL/CUIT: {issuerProfile.cuit_cuil || '—'}</p>
+                  <p className="text-gray-600">{issuerProfile.address || '—'}</p>
+                  <p className="text-gray-600">{issuerProfile.phone || '—'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-semibold">
                     {generatedReport?.receipt_number || 'REC-PENDIENTE'}
                   </p>
                   <p className="text-gray-600">
-                    Fecha: {generatedReport?.issue_date || getLocalISODate()}
+                    Fecha: {formatDateLatam(generatedReport?.issue_date || getLocalISODate())}
                   </p>
                 </div>
               </div>
@@ -472,7 +618,7 @@ export default function PayrollPage() {
                 <div>
                   <h5 className="font-semibold">Receptor</h5>
                   <p>Crew: {calculation.crew_name}</p>
-                  <p>Período: {calculation.start_date} a {calculation.end_date}</p>
+                  <p>Período: {formatDateLatam(calculation.start_date)} a {formatDateLatam(calculation.end_date)}</p>
                 </div>
                 <div>
                   <h5 className="font-semibold">Obra</h5>
@@ -504,7 +650,7 @@ export default function PayrollPage() {
                 <div>
                   <h5 className="font-semibold">Referencia</h5>
                   <p>Número: {generatedReport?.receipt_number || 'REC-PENDIENTE'}</p>
-                  <p>Emitido por: Custom Srl</p>
+                  <p>Emitido por: {issuerProfile.company_name || '—'}</p>
                 </div>
               </div>
 
@@ -553,14 +699,11 @@ export default function PayrollPage() {
           </div>
           <div className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
             <div className="text-2xl font-bold text-white">
-              ${calculation ? calculation.total_value.toLocaleString() : '0'}
+              ${calculation ? pendingLiquidationTotal.toLocaleString() : '0'}
             </div>
-            <div className="text-sm text-gray-400">Total Calculado</div>
+            <div className="text-sm text-gray-400">A liquidar</div>
             <div className="text-xs text-gray-400 mt-2">
-              Liquidado: ${emittedAmount.toLocaleString()}
-            </div>
-            <div className="text-xs text-gray-400">
-              Pendiente: ${pendingAmount.toLocaleString()}
+              Ya liquidado: ${emittedAmount.toLocaleString()}
             </div>
           </div>
         </div>
@@ -568,6 +711,7 @@ export default function PayrollPage() {
     </div>
   );
 }
+
 
 
 

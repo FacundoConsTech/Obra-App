@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 
 type Page = 'planned' | 'daily' | 'payroll' | 'receipt';
 
@@ -12,10 +12,10 @@ export default function Navigation({ currentPage, onPageChange, onLogout }: Navi
   const [isOpen, setIsOpen] = useState(false);
 
   const pages = [
-    { id: 'planned' as Page, name: 'Planned', icon: '📋' },
-    { id: 'daily' as Page, name: 'Daily Entries', icon: '📝' },
-    { id: 'payroll' as Page, name: 'Payroll', icon: '💰' },
-    { id: 'receipt' as Page, name: 'Comprobantes', icon: '🧾' },
+    { id: 'planned' as Page, name: 'Planned' },
+    { id: 'daily' as Page, name: 'Daily Entries' },
+    { id: 'payroll' as Page, name: 'Payroll' },
+    { id: 'receipt' as Page, name: 'Comprobantes' },
   ];
 
   return (
@@ -39,7 +39,6 @@ export default function Navigation({ currentPage, onPageChange, onLogout }: Navi
                     : 'text-gray-300 hover:text-white hover:bg-gray-800/50'
                 }`}
               >
-                <span className="mr-2">{page.icon}</span>
                 {page.name}
               </button>
             ))}
@@ -48,7 +47,7 @@ export default function Navigation({ currentPage, onPageChange, onLogout }: Navi
                 onClick={onLogout}
                 className="ml-2 px-4 py-2 rounded-lg font-semibold text-gray-300 hover:text-white hover:bg-gray-800/50 transition-colors"
               >
-                Cerrar SesiÃ³n
+                Cerrar Sesión
               </button>
             )}
           </div>
@@ -83,7 +82,6 @@ export default function Navigation({ currentPage, onPageChange, onLogout }: Navi
                       : 'text-gray-300 hover:text-white hover:bg-gray-800/50'
                   }`}
                 >
-                  <span className="mr-3">{page.icon}</span>
                   {page.name}
                 </button>
               ))}
@@ -95,7 +93,7 @@ export default function Navigation({ currentPage, onPageChange, onLogout }: Navi
                   }}
                   className="w-full text-left px-4 py-3 rounded-lg font-semibold text-gray-300 hover:text-white hover:bg-gray-800/50 transition-colors"
                 >
-                  Cerrar SesiÃ³n
+                  Cerrar Sesión
                 </button>
               )}
             </div>

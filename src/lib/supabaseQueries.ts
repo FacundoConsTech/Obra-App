@@ -900,6 +900,82 @@ export const queueCreatePaymentReceipt = (
   return { id, commit };
 };
 
+export const getLiquidatedQtyByCrewTaskIds = async (
+  crewId: string,
+  taskIds: string[],
+  asOfDate: string
+): Promise<Map<string, number>> => {
+  const result = new Map<string, number>();
+  if (taskIds.length === 0) return result;
+
+  const uniqueTaskIds = [...new Set(taskIds)];
+  const { data, error } = await supabase
+    .from('payroll_liquidation_items')
+    .select('task_id, liquidated_qty')
+    .eq('crew_id', crewId)
+    .in('task_id', uniqueTaskIds)
+    .lte('as_of_date', asOfDate);
+
+  if (error) {
+    throw error;
+  }
+
+  for (const row of data || []) {
+    const current = result.get(row.task_id) || 0;
+    result.set(row.task_id, current + Number(row.liquidated_qty || 0));
+  }
+
+  return result;
+};
+
+export const queueCreatePayrollLiquidationItem = (itemData: {
+  payroll_period_id: string;
+  receipt_id: string;
+  crew_id: string;
+  task_id: string;
+  liquidated_qty: number;
+  unit: 'm3' | 'ml' | 'm2' | 'u';
+  unit_price: number;
+  currency: 'ARS' | 'USD' | 'EUR';
+  line_amount: number;
+  executed_qty_snapshot: number;
+  pending_qty_snapshot: number;
+  as_of_date: string;
+}): QueuedWrite => {
+  const id = generateClientId();
+  const payload = {
+    id,
+    payroll_period_id: itemData.payroll_period_id,
+    receipt_id: itemData.receipt_id,
+    crew_id: itemData.crew_id,
+    task_id: itemData.task_id,
+    liquidated_qty: itemData.liquidated_qty,
+    unit: itemData.unit,
+    unit_price: itemData.unit_price,
+    currency: itemData.currency,
+    line_amount: itemData.line_amount,
+    executed_qty_snapshot: itemData.executed_qty_snapshot,
+    pending_qty_snapshot: itemData.pending_qty_snapshot,
+    as_of_date: itemData.as_of_date,
+    created_at: new Date().toISOString(),
+  };
+
+  const commit = supabase
+    .from('payroll_liquidation_items')
+    .insert(payload)
+    .then(({ error, status, statusText }) => {
+      if (error) {
+        throw formatSupabaseError(
+          `queueCreatePayrollLiquidationItem insert failed (status=${status} ${statusText || ''})`,
+          error,
+          payload
+        );
+      }
+    });
+
+  return { id, commit };
+};
+
 export const getCrewsByIds = async (crewIds: string[]): Promise<Crew[]> => {
   if (crewIds.length === 0) return [];
 

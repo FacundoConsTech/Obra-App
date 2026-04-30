@@ -8,8 +8,8 @@ import {
   createTaskPrice,
   queueCreateTask,
   getDailyEntries,
-} from '../lib/firebaseQueries';
-import type { Task, Crew } from '../lib/firebaseQueries';
+} from '../lib/supabaseQueries';
+import type { Task, Crew } from '../lib/supabaseQueries';
 import { getLocalISODate } from '../lib/dateUtils';
 
 type TaskWithProgress = Task & {

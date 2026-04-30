@@ -4,7 +4,7 @@
 
 1. ✅ Instalado Firebase SDK
 2. ✅ Creado `src/lib/firebase.ts` (configuración)
-3. ✅ Creado `src/lib/firebaseQueries.ts` (funciones de acceso a datos)
+3. ✅ Creado `src/lib/supabaseQueries.ts` (funciones de acceso a datos)
 4. ✅ Actualizado `PlannedPage.tsx` para usar Firebase
 5. ✅ Actualizado `DailyEntriesPage.tsx` para usar Firebase
 6. ✅ Agregada función de borrar Daily Entries

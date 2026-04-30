@@ -11,8 +11,9 @@ import {
   type Task,
   type Crew,
   type DailyEntry
-} from '../lib/firebaseQueries';
-import { getLocalISODate } from '../lib/dateUtils';
+} from '../lib/supabaseQueries';
+import { formatDateLatam, getLocalISODate } from '../lib/dateUtils';
+import LatamDateInput from './LatamDateInput';
 
 export default function DailyEntriesPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -437,10 +438,9 @@ export default function DailyEntriesPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">Fecha</label>
-                  <input
-                    type="date"
+                  <LatamDateInput
                     value={formData.date}
-                    onChange={(e) => setFormData({...formData, date: e.target.value})}
+                    onChange={(nextIsoDate) => setFormData({...formData, date: nextIsoDate})}
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
                     required
                   />
@@ -581,19 +581,17 @@ export default function DailyEntriesPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Desde</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={filterDateFrom}
-                onChange={(e) => setFilterDateFrom(e.target.value)}
+                onChange={setFilterDateFrom}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Hasta</label>
-              <input
-                type="date"
+              <LatamDateInput
                 value={filterDateTo}
-                onChange={(e) => setFilterDateTo(e.target.value)}
+                onChange={setFilterDateTo}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
@@ -631,7 +629,7 @@ export default function DailyEntriesPage() {
                   
                   return (
                     <tr key={entry.id} className="hover:bg-gray-800/30 transition-colors">
-                      <td className="px-6 py-4 text-sm text-gray-300">{entry.date}</td>
+                      <td className="px-6 py-4 text-sm text-gray-300">{formatDateLatam(entry.date)}</td>
                       <td className="px-6 py-4 text-sm text-gray-300">
                         {task?.task_code} - {task?.description}
                       </td>

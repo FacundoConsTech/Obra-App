@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import {
   getTasks,
   getCrews,
@@ -19,7 +19,11 @@ type TaskWithProgress = Task & {
   unit_price: number | null;
 };
 
-export default function PlannedPage() {
+type PlannedPageProps = {
+  activeProjectId: string | null;
+};
+
+export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
   const [tasks, setTasks] = useState<TaskWithProgress[]>([]);
   const [crews, setCrews] = useState<Crew[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,7 +41,6 @@ export default function PlannedPage() {
     unit: 'u',
     unit_price: '',
   });
-  const hasLoadedRef = useRef(false);
 
   const sortTasksByCatalogOrder = (items: TaskWithProgress[]) =>
     [...items].sort(
@@ -47,10 +50,8 @@ export default function PlannedPage() {
     );
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-    loadTasks();
-  }, []);
+    void loadTasks();
+  }, [activeProjectId]);
 
   const parseUnitPrice = (value: string) => {
     if (!value.trim()) return null;
@@ -60,11 +61,19 @@ export default function PlannedPage() {
   };
 
    const loadTasks = async () => {
+    if (!activeProjectId) {
+      setTasks([]);
+      setCrews([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     try {
       const [tasksData, entriesData, crewsData] = await Promise.all([
-        getTasks(),
-        getDailyEntries(),
-        getCrews().catch((error) => {
+        getTasks(activeProjectId),
+        getDailyEntries({ projectId: activeProjectId }),
+        getCrews(activeProjectId).catch((error) => {
           console.error('Error loading crews for rubro selector:', error);
           return [];
         }),
@@ -220,6 +229,10 @@ export default function PlannedPage() {
 
   const handleCreateTask = async () => {
     if (creatingTask) return;
+    if (!activeProjectId) {
+      alert('Selecciona un proyecto activo antes de crear tareas.');
+      return;
+    }
     if (crewRubros.length === 0) {
       alert('Primero crea al menos una crew para poder seleccionar Rubro.');
       return;
@@ -252,7 +265,7 @@ export default function PlannedPage() {
         total_qty: createForm.total_qty ? parseFloat(createForm.total_qty) : undefined,
         unit: createForm.unit as 'm3' | 'ml' | 'm2' | 'u',
         unit_price: parsedUnitPrice,
-      });
+      }, activeProjectId);
       const newTaskId = queuedTask.id;
 
       const optimisticTask: TaskWithProgress = {
@@ -594,4 +607,3 @@ export default function PlannedPage() {
     </div>
   );
 }
-

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import {
   getCrews, 
   getTasks,
@@ -55,7 +55,11 @@ type GeneratedReport = {
   issue_date: string;
 };
 
-export default function PayrollPage() {
+type PayrollPageProps = {
+  activeProjectId: string | null;
+};
+
+export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
   const [crews, setCrews] = useState<Crew[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCrew, setSelectedCrew] = useState('');
@@ -68,7 +72,6 @@ export default function PayrollPage() {
   const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(null);
   const [liquidatedAmount, setLiquidatedAmount] = useState(0);
   const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
-  const hasLoadedRef = useRef(false);
 
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -86,10 +89,14 @@ export default function PayrollPage() {
   };
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-    loadCrews();
-  }, []);
+    setLoading(true);
+    setSelectedCrew('');
+    setCalculation(null);
+    setGeneratedReport(null);
+    setShowReceipt(false);
+    setLiquidatedAmount(0);
+    void loadCrews(activeProjectId);
+  }, [activeProjectId]);
 
   useEffect(() => {
     let active = true;
@@ -103,9 +110,14 @@ export default function PayrollPage() {
     };
   }, []);
 
-  const loadCrews = async () => {
+  const loadCrews = async (projectId: string | null) => {
+    if (!projectId) {
+      setCrews([]);
+      setLoading(false);
+      return;
+    }
     try {
-      const crewsData = await getCrews();
+      const crewsData = await getCrews(projectId);
       setCrews(crewsData);
     } catch (error) {
       console.error('Error loading crews:', error);
@@ -115,7 +127,7 @@ export default function PayrollPage() {
   };
 
   const calculatePayroll = async () => {
-    if (!selectedCrew || !dateFrom || !dateTo) return;
+    if (!activeProjectId || !selectedCrew || !dateFrom || !dateTo) return;
 
     setGeneratedReport(null);
     setShowReceipt(false);
@@ -127,18 +139,20 @@ export default function PayrollPage() {
         crewId: selectedCrew,
         dateFrom,
         dateTo,
+        projectId: activeProjectId,
       });
 
       const uniqueTaskIds = [...new Set(entriesData.map((entry) => entry.task_id))];
       const taskIdSet = new Set(uniqueTaskIds);
       const [tasksData, taskPricesByTaskId] = await Promise.all([
-        getTasks(),
+        getTasks(activeProjectId),
         getTaskPricesByTaskIds(uniqueTaskIds, dateTo),
       ]);
       const liquidatedQtyByTaskId = await getLiquidatedQtyByCrewTaskIds(
         selectedCrew,
         uniqueTaskIds,
-        dateTo
+        dateTo,
+        activeProjectId
       );
       console.log('[Payroll][Ledger][Read] lookup context', {
         crew_id: selectedCrew,
@@ -228,7 +242,7 @@ export default function PayrollPage() {
         total_value: totalValue,
         days_worked: daysWorked,
       });
-      void refreshLiquidatedAmount(selectedCrew, dateFrom, dateTo);
+      void refreshLiquidatedAmount(selectedCrew, dateFrom, dateTo, activeProjectId);
     } catch (error) {
       console.error('Error calculating payroll:', error);
     } finally {
@@ -236,16 +250,25 @@ export default function PayrollPage() {
     }
   };
 
-  const refreshLiquidatedAmount = async (crewId: string, startDate: string, endDate: string) => {
+  const refreshLiquidatedAmount = async (
+    crewId: string,
+    startDate: string,
+    endDate: string,
+    projectId: string | null
+  ) => {
+    if (!projectId) {
+      setLiquidatedAmount(0);
+      return;
+    }
     try {
-      const receiptsData = await getPaymentReceipts();
+      const receiptsData = await getPaymentReceipts(projectId);
       if (receiptsData.length === 0) {
         setLiquidatedAmount(0);
         return;
       }
 
       const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
-      const periodsData = await getPayrollPeriodsByIds(periodIds);
+      const periodsData = await getPayrollPeriodsByIds(periodIds, projectId);
       const periodById = new Map(periodsData.map((period) => [period.id, period]));
 
       const totalLiquidated = receiptsData.reduce((sum, receipt) => {
@@ -264,7 +287,7 @@ export default function PayrollPage() {
   };
 
   const generateReceipt = async () => {
-    if (!calculation || generatingReport) return;
+    if (!activeProjectId || !calculation || generatingReport) return;
     if (calculation.entries.length === 0) {
       alert('No hay tareas certificadas en el periodo seleccionado.');
       return;
@@ -278,7 +301,7 @@ export default function PayrollPage() {
         end_date: calculation.end_date,
         total_value_completed: calculation.total_value,
         status: 'closed',
-      });
+      }, activeProjectId);
 
       let receiptNumber = '';
       try {
@@ -317,7 +340,7 @@ export default function PayrollPage() {
         amount: calculation.total_value,
         currency: 'ARS',
         notes: `PAYROLL_REPORT::${JSON.stringify(reportCopy)}`,
-      });
+      }, activeProjectId);
 
       const queuedLiquidationItems = calculation.task_summaries
         .filter((summary) => summary.pending_qty > 0)
@@ -335,7 +358,7 @@ export default function PayrollPage() {
             executed_qty_snapshot: summary.executed_qty,
             pending_qty_snapshot: summary.pending_qty,
             as_of_date: calculation.end_date,
-          })
+          }, activeProjectId)
         );
       console.log(
         '[Payroll][Ledger][Write] queued liquidation items',
@@ -365,7 +388,7 @@ export default function PayrollPage() {
         receipt_number: receiptNumber,
         issue_date: issueDate,
       });
-      await refreshLiquidatedAmount(calculation.crew_id, calculation.start_date, calculation.end_date);
+      await refreshLiquidatedAmount(calculation.crew_id, calculation.start_date, calculation.end_date, activeProjectId);
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);

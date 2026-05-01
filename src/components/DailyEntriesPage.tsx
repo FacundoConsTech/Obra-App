@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   getTasks, 
   getCrews, 
@@ -15,12 +15,15 @@ import {
 import { formatDateLatam, getLocalISODate } from '../lib/dateUtils';
 import LatamDateInput from './LatamDateInput';
 
-export default function DailyEntriesPage() {
+type DailyEntriesPageProps = {
+  activeProjectId: string | null;
+};
+
+export default function DailyEntriesPage({ activeProjectId }: DailyEntriesPageProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [crews, setCrews] = useState<Crew[]>([]);
   const [entries, setEntries] = useState<DailyEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterRubro, setFilterRubro] = useState('');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -60,7 +63,6 @@ export default function DailyEntriesPage() {
     member_count: '',
     notes: '',
   });
-  const hasLoadedRef = useRef(false);
 
   const sortCrewsByName = (items: Crew[]) =>
     [...items].sort((a, b) => a.name.localeCompare(b.name));
@@ -72,22 +74,29 @@ export default function DailyEntriesPage() {
   }, [entries]);
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-    loadData();
-  }, []);
+    setLoading(true);
+    void loadData(activeProjectId);
+  }, [activeProjectId]);
 
   useEffect(() => {
     validateQty();
   }, [formData.task_id, formData.qty, tasks, entries]);
 
-  const loadData = async () => {
+  const loadData = async (projectId: string | null) => {
+    if (!projectId) {
+      setTasks([]);
+      setCrews([]);
+      setEntries([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       // Cargar tareas, crews y entries desde Firebase
       const [tasksData, crewsData, entriesData] = await Promise.all([
-        getTasks(),
-        getCrews(),
-        getDailyEntries(),
+        getTasks(projectId),
+        getCrews(projectId),
+        getDailyEntries({ projectId }),
       ]);
 
       setTasks(tasksData);
@@ -143,6 +152,12 @@ export default function DailyEntriesPage() {
 
     try {
       setSavingEntry(true);
+      if (!activeProjectId) {
+        alert('Selecciona un proyecto para guardar la entrada.');
+        setSavingEntry(false);
+        return;
+      }
+
       const queuedEntry = queueCreateDailyEntry({
         date: formData.date,
         task_id: formData.task_id,
@@ -151,7 +166,7 @@ export default function DailyEntriesPage() {
         unit: formData.unit as 'm3' | 'ml' | 'm2' | 'u',
         foreman: formData.foreman || undefined,
         notes: formData.notes || undefined,
-      });
+      }, activeProjectId);
       const createdEntryId = queuedEntry.id;
 
       setEntries((prev) => [
@@ -198,7 +213,7 @@ export default function DailyEntriesPage() {
 
     try {
       await deleteDailyEntry(entryId);
-      await loadData();
+      await loadData(activeProjectId);
     } catch (error) {
       console.error('Error deleting entry:', error);
       alert('Error al borrar la entrada');
@@ -220,13 +235,19 @@ export default function DailyEntriesPage() {
       const crewMemberCount = crewForm.member_count ? parseInt(crewForm.member_count, 10) : undefined;
       const crewNotes = crewForm.notes.trim() || undefined;
 
+      if (!activeProjectId) {
+        alert('Selecciona un proyecto para crear crews.');
+        setSavingCrew(false);
+        return;
+      }
+
       const queuedCrew = queueCreateCrew({
         name: crewName,
         foreman_name: crewForemanName,
         foreman_contact: crewForemanContact,
         member_count: crewMemberCount,
         notes: crewNotes,
-      });
+      }, activeProjectId);
       const crewId = queuedCrew.id;
 
       setCrews((prev) =>
@@ -253,13 +274,13 @@ export default function DailyEntriesPage() {
         member_count: '',
         notes: '',
       });
-      setFormData((prev) => ({ ...prev, crew_id: crewId }));
+      setFormData((prev) => ({ ...prev, crew_id: crewId, rubro: crewName, task_id: '' }));
       setSavingCrew(false);
 
       queuedCrew.commit.catch((error) => {
         console.error('Error creating crew:', error);
         setCrews((prev) => prev.filter((crew) => crew.id !== crewId));
-        setFormData((prev) => (prev.crew_id === crewId ? { ...prev, crew_id: '' } : prev));
+        setFormData((prev) => (prev.crew_id === crewId ? { ...prev, crew_id: '', rubro: '', task_id: '' } : prev));
         alert('No se pudo guardar la crew en Firebase. Se revirtio la crew local.');
       });
     } catch (error) {
@@ -345,7 +366,7 @@ export default function DailyEntriesPage() {
       setDeletingCrewId(crew.id);
       await deactivateCrew(crew.id);
       setCrews((prev) => prev.filter((item) => item.id !== crew.id));
-      setFormData((prev) => (prev.crew_id === crew.id ? { ...prev, crew_id: '' } : prev));
+      setFormData((prev) => (prev.crew_id === crew.id ? { ...prev, crew_id: '', rubro: '', task_id: '' } : prev));
       if (editingCrewId === crew.id) {
         handleEditCrewCancel();
       }
@@ -381,13 +402,38 @@ export default function DailyEntriesPage() {
     setFormData((prev) => ({
       ...prev,
       task_id: taskId,
+      rubro: selectedTask.rubro || prev.rubro,
+      crew_id: relatedCrew?.id || '',
       unit: autoUnit || prev.unit,
       foreman: autoForeman || prev.foreman,
     }));
   };
 
-  const filteredTasks = tasks.filter(task => 
-    !filterRubro || task.rubro === filterRubro
+  const handleOperationalGroupSelect = (groupName: string) => {
+    const normalizedGroup = groupName.trim().toLowerCase();
+    const matchedCrew = crews.find((crew) => crew.name.trim().toLowerCase() === normalizedGroup);
+
+    setFormData((prev) => ({
+      ...prev,
+      rubro: groupName,
+      crew_id: matchedCrew?.id || '',
+      task_id: '',
+    }));
+  };
+
+  const handleCrewSelect = (crewId: string) => {
+    const crew = crews.find((item) => item.id === crewId);
+
+    setFormData((prev) => ({
+      ...prev,
+      crew_id: crewId,
+      rubro: crew?.name || '',
+      task_id: '',
+    }));
+  };
+
+  const filteredTasks = tasks.filter((task) =>
+    !formData.rubro || task.rubro.trim().toLowerCase() === formData.rubro.trim().toLowerCase()
   );
 
   const filteredEntries = entries.filter(entry => {
@@ -396,7 +442,7 @@ export default function DailyEntriesPage() {
     return matchesDateFrom && matchesDateTo;
   });
 
-  const rubros = [...new Set(tasks.map(t => t.rubro))];
+  const operationalGroups = [...new Set(crews.map((crew) => crew.name.trim()).filter(Boolean))];
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const crewById = useMemo(() => new Map(crews.map((crew) => [crew.id, crew])), [crews]);
 
@@ -450,13 +496,13 @@ export default function DailyEntriesPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">Rubro</label>
                   <select
                     value={formData.rubro}
-                    onChange={(e) => setFormData({...formData, rubro: e.target.value, task_id: ''})}
+                    onChange={(e) => handleOperationalGroupSelect(e.target.value)}
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
                     required
                   >
-                    <option value="">Seleccionar rubro</option>
-                    {rubros.map(rubro => (
-                      <option key={rubro} value={rubro}>{rubro}</option>
+                    <option value="">Seleccionar rubro/crew</option>
+                    {operationalGroups.map((groupName) => (
+                      <option key={groupName} value={groupName}>{groupName}</option>
                     ))}
                   </select>
                 </div>
@@ -482,7 +528,7 @@ export default function DailyEntriesPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">Crew</label>
                   <select
                     value={formData.crew_id}
-                    onChange={(e) => setFormData({...formData, crew_id: e.target.value})}
+                    onChange={(e) => handleCrewSelect(e.target.value)}
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-white/20 focus:border-transparent"
                     required
                   >

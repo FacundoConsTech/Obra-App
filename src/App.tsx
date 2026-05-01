@@ -4,13 +4,15 @@ import PlannedPage from './components/PlannedPage';
 import DailyEntriesPage from './components/DailyEntriesPage';
 import PayrollPage from './components/PayrollPage';
 import ComprobantePage from './components/ComprobantePage';
+import StatsPage from './components/StatsPage';
 import LoginPage from './components/LoginPage';
 import LandingPage from './components/LandingPage';
 import AppOnboarding from './components/AppOnboarding';
 import { supabase } from './lib/supabase';
+import { createProject, getProjects, type Project } from './lib/supabaseQueries';
 import type { Session } from '@supabase/supabase-js';
 
-type Page = 'planned' | 'daily' | 'payroll' | 'receipt';
+type Page = 'planned' | 'daily' | 'payroll' | 'receipt' | 'stats';
 
 type RouteView = 'landing' | 'app';
 
@@ -62,6 +64,8 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [routeView, setRouteView] = useState<RouteView>(() => resolveRoute(window.location.pathname));
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
 
@@ -69,6 +73,31 @@ export default function App() {
     () => (session?.user?.id ? `obrapp:onboarding:v1:${session.user.id}` : null),
     [session?.user?.id]
   );
+  const projectStorageKey = useMemo(
+    () => (session?.user?.id ? `obrapp:activeProject:v1:${session.user.id}` : null),
+    [session?.user?.id]
+  );
+
+  const resolveInitialProjectId = (projectsData: Project[]) => {
+    const savedProjectId = projectStorageKey ? window.localStorage.getItem(projectStorageKey) : null;
+    const validSavedProjectId =
+      savedProjectId && projectsData.some((project) => project.id === savedProjectId) ? savedProjectId : null;
+    const defaultProjectId = projectsData.find((project) => project.id === 'proyecto-principal')?.id ?? null;
+    const firstProjectId = projectsData[0]?.id ?? null;
+    return validSavedProjectId ?? defaultProjectId ?? firstProjectId ?? null;
+  };
+
+  const refreshProjects = async (nextActiveProjectId?: string | null) => {
+    const projectsData = await getProjects();
+    setProjects(projectsData);
+
+    if (nextActiveProjectId && projectsData.some((project) => project.id === nextActiveProjectId)) {
+      setActiveProjectId(nextActiveProjectId);
+      return;
+    }
+
+    setActiveProjectId(resolveInitialProjectId(projectsData));
+  };
 
   const navigate = (path: '/app' | '/', replace = false) => {
     if (window.location.pathname !== path) {
@@ -128,6 +157,40 @@ export default function App() {
     }
   }, [session, routeView, onboardingStorageKey]);
 
+  useEffect(() => {
+    if (!session || routeView !== 'app') return;
+
+    let active = true;
+    const loadProjects = async () => {
+      try {
+        const projectsData = await getProjects();
+        if (!active) return;
+
+        setProjects(projectsData);
+        setActiveProjectId(resolveInitialProjectId(projectsData));
+      } catch (error) {
+        console.error('Error loading projects:', error);
+        if (!active) return;
+        setProjects([]);
+        setActiveProjectId(null);
+      }
+    };
+
+    void loadProjects();
+    return () => {
+      active = false;
+    };
+  }, [session, routeView, projectStorageKey]);
+
+  useEffect(() => {
+    if (!projectStorageKey) return;
+    if (activeProjectId) {
+      window.localStorage.setItem(projectStorageKey, activeProjectId);
+    } else {
+      window.localStorage.removeItem(projectStorageKey);
+    }
+  }, [projectStorageKey, activeProjectId]);
+
   const completeOnboarding = () => {
     if (onboardingStorageKey) {
       window.localStorage.setItem(onboardingStorageKey, 'done');
@@ -164,6 +227,16 @@ export default function App() {
     setOnboardingStepIndex(0);
   };
 
+  const handleCreateProject = async (name: string, description?: string) => {
+    const normalizedName = name.trim();
+    if (!normalizedName) {
+      throw new Error('El nombre del proyecto es obligatorio.');
+    }
+
+    const createdProjectId = await createProject({ name: normalizedName, description });
+    await refreshProjects(createdProjectId);
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center">
@@ -182,11 +255,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black">
-      <Navigation currentPage={currentPage} onPageChange={setCurrentPage} onLogout={handleLogout} />
-      {currentPage === 'planned' && <PlannedPage />}
-      {currentPage === 'daily' && <DailyEntriesPage />}
-      {currentPage === 'payroll' && <PayrollPage />}
-      {currentPage === 'receipt' && <ComprobantePage />}
+      <Navigation
+        currentPage={currentPage}
+        onPageChange={setCurrentPage}
+        onLogout={handleLogout}
+        projects={projects.map((project) => ({ id: project.id, name: project.name }))}
+        activeProjectId={activeProjectId}
+        onProjectChange={setActiveProjectId}
+        onCreateProject={handleCreateProject}
+      />
+      {currentPage === 'stats' && <StatsPage activeProjectId={activeProjectId} />}
+      {currentPage === 'planned' && <PlannedPage activeProjectId={activeProjectId} />}
+      {currentPage === 'daily' && <DailyEntriesPage activeProjectId={activeProjectId} />}
+      {currentPage === 'payroll' && <PayrollPage activeProjectId={activeProjectId} />}
+      {currentPage === 'receipt' && <ComprobantePage activeProjectId={activeProjectId} />}
 
       {onboardingVisible && (
         <AppOnboarding

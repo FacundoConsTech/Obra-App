@@ -17,6 +17,15 @@ export type Crew = {
   updated_at: Date;
 };
 
+export type Project = {
+  id: string;
+  name: string;
+  description?: string;
+  active: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type Task = {
   id: string;
   rubro: string;
@@ -78,6 +87,23 @@ export type PaymentReceipt = {
   created_at: Date;
 };
 
+export type PayrollLiquidationItem = {
+  id: string;
+  payroll_period_id: string;
+  receipt_id: string;
+  crew_id: string;
+  task_id: string;
+  liquidated_qty: number;
+  unit: 'm3' | 'ml' | 'm2' | 'u';
+  unit_price: number;
+  currency: 'ARS' | 'USD' | 'EUR';
+  line_amount: number;
+  executed_qty_snapshot: number;
+  pending_qty_snapshot: number;
+  as_of_date: string;
+  created_at: Date;
+};
+
 // ============================================
 // FUNCIONES DE CONVERSIÓN
 // ============================================
@@ -115,15 +141,67 @@ export type QueuedWrite = {
 };
 
 // ============================================
+// PROJECTS
+// ============================================
+
+export const getProjects = async (): Promise<Project[]> => {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('active', true)
+    .order('created_at', { ascending: true })
+    .order('name', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    active: row.active,
+    created_at: fromSupabaseTimestamp(row.created_at),
+    updated_at: fromSupabaseTimestamp(row.updated_at),
+  }));
+};
+
+export const createProject = async (projectData: {
+  name: string;
+  description?: string;
+}): Promise<string> => {
+  const id = generateClientId();
+  const payload = {
+    id,
+    name: projectData.name.trim(),
+    description: projectData.description?.trim() ? projectData.description.trim() : null,
+    active: true,
+  };
+
+  const { error } = await supabase.from('projects').insert(payload);
+  if (error) {
+    throw formatSupabaseError('createProject insert failed', error, payload);
+  }
+
+  return id;
+};
+
+// ============================================
 // CREWS
 // ============================================
 
-export const getCrews = async (): Promise<Crew[]> => {
-  const { data, error } = await supabase
+export const getCrews = async (projectId?: string): Promise<Crew[]> => {
+  let query = supabase
     .from('crews')
     .select('*')
     .eq('active', true)
     .order('name', { ascending: true });
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -219,13 +297,16 @@ export const deactivateCrew = async (id: string): Promise<void> => {
   }
 };
 
-export const queueCreateCrew = (crewData: {
+export const queueCreateCrew = (
+  crewData: {
   name: string;
   foreman_name?: string;
   foreman_contact?: string;
   member_count?: number;
   notes?: string;
-}): QueuedWrite => {
+  },
+  projectId?: string
+): QueuedWrite => {
   const id = generateClientId();
   const payload: Record<string, unknown> = {
     id,
@@ -247,6 +328,9 @@ export const queueCreateCrew = (crewData: {
       ? crewData.member_count
       : null;
   }
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('crews')
@@ -267,12 +351,18 @@ export const queueCreateCrew = (crewData: {
 // TASKS
 // ============================================
 
-export const getTasks = async (): Promise<Task[]> => {
-  const { data, error } = await supabase
+export const getTasks = async (projectId?: string): Promise<Task[]> => {
+  let query = supabase
     .from('tasks')
     .select('*')
     .order('rubro', { ascending: true })
     .order('task_code', { ascending: true });
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -312,10 +402,11 @@ export const createTask = async (taskData: Omit<Task, 'id' | 'created_at' | 'upd
 };
 
 export const queueCreateTask = (
-  taskData: Omit<Task, 'id' | 'created_at' | 'updated_at'>
+  taskData: Omit<Task, 'id' | 'created_at' | 'updated_at'>,
+  projectId?: string
 ): QueuedWrite => {
   const id = generateClientId();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id,
     rubro: taskData.rubro,
     task_code: taskData.task_code,
@@ -324,6 +415,9 @@ export const queueCreateTask = (
     unit: taskData.unit ?? null,
     unit_price: taskData.unit_price ?? null,
   };
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('tasks')
@@ -581,6 +675,7 @@ export const getDailyEntries = async (filters?: {
   crewId?: string;
   dateFrom?: string;
   dateTo?: string;
+  projectId?: string;
 }): Promise<DailyEntry[]> => {
   let supabaseQuery = supabase
     .from('daily_entries')
@@ -598,6 +693,9 @@ export const getDailyEntries = async (filters?: {
   }
   if (filters?.dateTo) {
     supabaseQuery = supabaseQuery.lte('date', filters.dateTo);
+  }
+  if (filters?.projectId) {
+    supabaseQuery = supabaseQuery.eq('project_id', filters.projectId);
   }
 
   const { data, error } = await supabaseQuery;
@@ -644,7 +742,8 @@ export const createDailyEntry = async (entryData: Omit<DailyEntry, 'id' | 'creat
 };
 
 export const queueCreateDailyEntry = (
-  entryData: Omit<DailyEntry, 'id' | 'created_at'>
+  entryData: Omit<DailyEntry, 'id' | 'created_at'>,
+  projectId?: string
 ): QueuedWrite => {
   const id = generateClientId();
   const payload: Record<string, unknown> = {
@@ -659,6 +758,9 @@ export const queueCreateDailyEntry = (
     photo_url: entryData.photo_url ?? null,
     created_by: entryData.created_by ?? null,
   };
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('daily_entries')
@@ -687,14 +789,20 @@ export const deleteDailyEntry = async (id: string): Promise<void> => {
 // PAYROLL PERIODS
 // ============================================
 
-export const getPayrollPeriodsByIds = async (periodIds: string[]): Promise<PayrollPeriod[]> => {
+export const getPayrollPeriodsByIds = async (periodIds: string[], projectId?: string): Promise<PayrollPeriod[]> => {
   if (periodIds.length === 0) return [];
 
   const uniqueIds = [...new Set(periodIds)];
-  const { data, error } = await supabase
+  let query = supabase
     .from('payroll_periods')
     .select('*')
     .in('id', uniqueIds);
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -737,11 +845,12 @@ export const createPayrollPeriod = async (periodData: Omit<PayrollPeriod, 'id' |
 };
 
 export const queueCreatePayrollPeriod = (
-  periodData: Omit<PayrollPeriod, 'id' | 'created_at' | 'updated_at'>
+  periodData: Omit<PayrollPeriod, 'id' | 'created_at' | 'updated_at'>,
+  projectId?: string
 ): QueuedWrite => {
   const id = generateClientId();
   const nowIso = new Date().toISOString();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id,
     crew_id: periodData.crew_id,
     start_date: periodData.start_date,
@@ -752,6 +861,9 @@ export const queueCreatePayrollPeriod = (
     created_at: nowIso,
     updated_at: nowIso,
   };
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('payroll_periods')
@@ -773,11 +885,17 @@ export const queueCreatePayrollPeriod = (
 // PAYMENT RECEIPTS
 // ============================================
 
-export const getPaymentReceipts = async (): Promise<PaymentReceipt[]> => {
-  const { data, error } = await supabase
+export const getPaymentReceipts = async (projectId?: string): Promise<PaymentReceipt[]> => {
+  let query = supabase
     .from('payment_receipts')
     .select('*')
     .order('created_at', { ascending: false });
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -797,11 +915,17 @@ export const getPaymentReceipts = async (): Promise<PaymentReceipt[]> => {
   })) as PaymentReceipt[];
 };
 
-export const getPaymentReceiptsList = async (): Promise<PaymentReceipt[]> => {
-  const { data, error } = await supabase
+export const getPaymentReceiptsList = async (projectId?: string): Promise<PaymentReceipt[]> => {
+  let query = supabase
     .from('payment_receipts')
     .select('id, payroll_period_id, number, issue_date, amount, currency, created_at')
     .order('created_at', { ascending: false });
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -818,12 +942,17 @@ export const getPaymentReceiptsList = async (): Promise<PaymentReceipt[]> => {
   })) as PaymentReceipt[];
 };
 
-export const getPaymentReceipt = async (id: string): Promise<PaymentReceipt | null> => {
-  const { data, error } = await supabase
+export const getPaymentReceipt = async (id: string, projectId?: string): Promise<PaymentReceipt | null> => {
+  let query = supabase
     .from('payment_receipts')
     .select('*')
-    .eq('id', id)
-    .maybeSingle();
+    .eq('id', id);
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     throw error;
@@ -868,10 +997,11 @@ export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id
 };
 
 export const queueCreatePaymentReceipt = (
-  receiptData: Omit<PaymentReceipt, 'id' | 'created_at'>
+  receiptData: Omit<PaymentReceipt, 'id' | 'created_at'>,
+  projectId?: string
 ): QueuedWrite => {
   const id = generateClientId();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id,
     payroll_period_id: receiptData.payroll_period_id,
     number: receiptData.number,
@@ -883,6 +1013,9 @@ export const queueCreatePaymentReceipt = (
     pdf_url: receiptData.pdf_url ?? null,
     created_at: new Date().toISOString(),
   };
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('payment_receipts')
@@ -903,18 +1036,25 @@ export const queueCreatePaymentReceipt = (
 export const getLiquidatedQtyByCrewTaskIds = async (
   crewId: string,
   taskIds: string[],
-  asOfDate: string
+  asOfDate: string,
+  projectId?: string
 ): Promise<Map<string, number>> => {
   const result = new Map<string, number>();
   if (taskIds.length === 0) return result;
 
   const uniqueTaskIds = [...new Set(taskIds)];
-  const { data, error } = await supabase
+  let query = supabase
     .from('payroll_liquidation_items')
     .select('task_id, liquidated_qty')
     .eq('crew_id', crewId)
     .in('task_id', uniqueTaskIds)
     .lte('as_of_date', asOfDate);
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -926,6 +1066,40 @@ export const getLiquidatedQtyByCrewTaskIds = async (
   }
 
   return result;
+};
+
+export const getPayrollLiquidationItems = async (projectId?: string): Promise<PayrollLiquidationItem[]> => {
+  let query = supabase
+    .from('payroll_liquidation_items')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []).map((row) => ({
+    id: row.id,
+    payroll_period_id: row.payroll_period_id,
+    receipt_id: row.receipt_id,
+    crew_id: row.crew_id,
+    task_id: row.task_id,
+    liquidated_qty: Number(row.liquidated_qty || 0),
+    unit: row.unit,
+    unit_price: Number(row.unit_price || 0),
+    currency: row.currency,
+    line_amount: Number(row.line_amount || 0),
+    executed_qty_snapshot: Number(row.executed_qty_snapshot || 0),
+    pending_qty_snapshot: Number(row.pending_qty_snapshot || 0),
+    as_of_date: typeof row.as_of_date === 'string' ? row.as_of_date : getLocalISODate(new Date(row.as_of_date)),
+    created_at: fromSupabaseTimestamp(row.created_at),
+  })) as PayrollLiquidationItem[];
 };
 
 export const queueCreatePayrollLiquidationItem = (itemData: {
@@ -941,9 +1115,9 @@ export const queueCreatePayrollLiquidationItem = (itemData: {
   executed_qty_snapshot: number;
   pending_qty_snapshot: number;
   as_of_date: string;
-}): QueuedWrite => {
+}, projectId?: string): QueuedWrite => {
   const id = generateClientId();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id,
     payroll_period_id: itemData.payroll_period_id,
     receipt_id: itemData.receipt_id,
@@ -959,6 +1133,9 @@ export const queueCreatePayrollLiquidationItem = (itemData: {
     as_of_date: itemData.as_of_date,
     created_at: new Date().toISOString(),
   };
+  if (projectId) {
+    payload.project_id = projectId;
+  }
 
   const commit = supabase
     .from('payroll_liquidation_items')
@@ -976,14 +1153,20 @@ export const queueCreatePayrollLiquidationItem = (itemData: {
   return { id, commit };
 };
 
-export const getCrewsByIds = async (crewIds: string[]): Promise<Crew[]> => {
+export const getCrewsByIds = async (crewIds: string[], projectId?: string): Promise<Crew[]> => {
   if (crewIds.length === 0) return [];
 
   const uniqueIds = [...new Set(crewIds)];
-  const { data, error } = await supabase
+  let query = supabase
     .from('crews')
     .select('*')
     .in('id', uniqueIds);
+
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;

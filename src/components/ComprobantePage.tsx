@@ -36,7 +36,11 @@ type PayrollReportArchive = {
   }>;
 };
 
-export default function ComprobantePage() {
+type ComprobantePageProps = {
+  activeProjectId: string | null;
+};
+
+export default function ComprobantePage({ activeProjectId }: ComprobantePageProps) {
   const DEBUG_TIMING = true;
   const renderCountRef = useRef(0);
   const mountStartRef = useRef<number | null>(null);
@@ -50,7 +54,6 @@ export default function ComprobantePage() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
   const [savingIssuerProfile, setSavingIssuerProfile] = useState(false);
-  const hasLoadedRef = useRef(false);
   renderCountRef.current += 1;
   if (DEBUG_TIMING && mountStartRef.current === null) {
     mountStartRef.current = performance.now();
@@ -60,15 +63,15 @@ export default function ComprobantePage() {
   useEffect(() => {
     effectRunRef.current += 1;
     if (DEBUG_TIMING) {
-      console.info('[Comprobantes][timing] mount effect run', {
+      console.info('[Comprobantes][timing] project effect run', {
         effectRun: effectRunRef.current,
-        hasLoaded: hasLoadedRef.current,
+        activeProjectId,
       });
     }
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-    loadReceipts();
-  }, []);
+    setLoading(true);
+    setSelectedReceipt(null);
+    void loadReceipts(activeProjectId);
+  }, [activeProjectId]);
 
   useEffect(() => {
     let active = true;
@@ -97,7 +100,13 @@ export default function ComprobantePage() {
     }
   }, [loading, receipts.length]);
 
-  const loadReceipts = async () => {
+  const loadReceipts = async (projectId: string | null) => {
+    if (!projectId) {
+      setReceipts([]);
+      setLoading(false);
+      return;
+    }
+
     loadRunRef.current += 1;
     loadStartRef.current = performance.now();
     const runId = loadRunRef.current;
@@ -108,7 +117,7 @@ export default function ComprobantePage() {
     const t0 = performance.now();
     try {
       const tReceipts0 = performance.now();
-      const receiptsData = await getPaymentReceiptsList();
+      const receiptsData = await getPaymentReceiptsList(projectId);
       const tReceipts1 = performance.now();
       if (DEBUG_TIMING) {
         console.info('[Comprobantes][timing] receipts query done', {
@@ -119,7 +128,7 @@ export default function ComprobantePage() {
       }
       const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
       const tPeriods0 = performance.now();
-      const periodsData = await getPayrollPeriodsByIds(periodIds);
+      const periodsData = await getPayrollPeriodsByIds(periodIds, projectId);
       const tPeriods1 = performance.now();
       if (DEBUG_TIMING) {
         console.info('[Comprobantes][timing] payroll periods query done', {
@@ -131,7 +140,7 @@ export default function ComprobantePage() {
       }
       const crewIds = [...new Set(periodsData.map((period) => period.crew_id))];
       const tCrews0 = performance.now();
-      const crewsData = await getCrewsByIds(crewIds);
+      const crewsData = await getCrewsByIds(crewIds, projectId);
       const tCrews1 = performance.now();
       if (DEBUG_TIMING) {
         console.info('[Comprobantes][timing] crews query done', {
@@ -198,7 +207,7 @@ export default function ComprobantePage() {
 
   const handleSelectReceipt = async (receipt: PaymentReceiptWithRelations) => {
     try {
-      const fullReceipt = await getPaymentReceipt(receipt.id);
+      const fullReceipt = await getPaymentReceipt(receipt.id, activeProjectId ?? undefined);
       if (!fullReceipt) {
         setSelectedReceipt(receipt);
         return;

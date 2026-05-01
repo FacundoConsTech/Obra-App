@@ -712,7 +712,10 @@ export default function DailyEntriesPage({ activeProjectId }: DailyEntriesPagePr
             </div>
             <div className="text-sm text-gray-400">Días Trabajados</div>
           </div>
-          <div className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
+          <div
+            data-onboarding="daily-create-crew"
+            className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700"
+          >
             <div className="text-2xl font-bold text-white">
               {crews.length}
             </div>

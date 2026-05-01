@@ -1,11 +1,10 @@
-﻿import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import type { ReactNode } from 'react';
 
 type OnboardingStep = {
   id: string;
   title: string;
   description: string;
-  page: 'planned' | 'daily' | 'payroll' | 'receipt' | 'stats';
-  targetSelector?: string;
+  page: 'planned' | 'daily' | 'payroll' | 'receipt';
 };
 
 type AppOnboardingProps = {
@@ -20,51 +19,11 @@ export default function AppOnboarding({ steps, stepIndex, onNext, onBack, onClos
   const step = steps[stepIndex];
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === steps.length - 1;
-  const [anchoredStyle, setAnchoredStyle] = useState<CSSProperties | null>(null);
-
-  const defaultStyle = useMemo<CSSProperties>(() => ({ right: '1rem', top: '5rem' }), []);
-
-  useEffect(() => {
-    if (!step.targetSelector) {
-      setAnchoredStyle(null);
-      return;
-    }
-
-    const updatePosition = () => {
-      const target = document.querySelector(step.targetSelector);
-      if (!(target instanceof HTMLElement)) {
-        setAnchoredStyle(null);
-        return;
-      }
-
-      const rect = target.getBoundingClientRect();
-      const panelWidth = Math.min(window.innerWidth * 0.92, 360);
-      const gap = 12;
-      const maxLeft = window.innerWidth - panelWidth - 12;
-      const preferredLeft = rect.right + gap;
-      const left = Math.max(12, Math.min(preferredLeft, maxLeft));
-      const preferredTop = rect.top;
-      const top = Math.max(80, Math.min(preferredTop, window.innerHeight - 260));
-
-      setAnchoredStyle({ left: `${left}px`, top: `${top}px`, right: 'auto' });
-    };
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [step.targetSelector]);
 
   return (
     <div className="pointer-events-none fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/45" />
-      <div
-        className="pointer-events-auto absolute w-[min(92vw,360px)] rounded-xl border border-cyan-300/35 bg-[#0b1321] p-5 shadow-2xl"
-        style={anchoredStyle ?? defaultStyle}
-      >
+      <div className="pointer-events-auto absolute right-4 top-20 w-[min(92vw,360px)] rounded-xl border border-cyan-300/35 bg-[#0b1321] p-5 shadow-2xl">
         <p className="text-xs uppercase tracking-[0.16em] text-cyan-200">Onboarding</p>
         <h3 className="mt-2 text-lg font-semibold text-white">{step.title}</h3>
         <p className="mt-2 text-sm text-gray-300">{step.description}</p>
@@ -89,7 +48,7 @@ export default function AppOnboarding({ steps, stepIndex, onNext, onBack, onClos
                 : 'border border-white/20 text-gray-200 hover:border-white/50'
             }`}
           >
-            Atrás
+            Atr�s
           </button>
           <button
             onClick={onNext}

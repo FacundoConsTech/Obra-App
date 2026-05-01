@@ -26,24 +26,26 @@ const onboardingSteps: Array<{
   title: string;
   description: string;
   page: Page;
+  targetSelector?: string;
 }> = [
   {
-    id: 'crews',
-    title: 'Acá cargás las cuadrillas',
-    description: 'En Daily Entries gestionás las crews activas y sus datos para usarlas en la carga diaria.',
-    page: 'daily',
-  },
-  {
     id: 'planned',
-    title: 'Acá ingresás las tareas',
-    description: 'En Planned definís rubros, tareas, cantidades y precios de referencia por obra.',
+    title: 'Acá planificás las tareas',
+    description: 'En Planned cargás rubros, tareas, cantidades y precios para planificar el trabajo.',
     page: 'planned',
   },
   {
     id: 'daily',
     title: 'Acá cargás los daily entries',
-    description: 'En Daily Entries registrás avances diarios por cuadrilla para mantener el progreso actualizado.',
+    description: 'En Daily Entries registrás el avance diario ejecutado para mantener el progreso actualizado.',
     page: 'daily',
+  },
+  {
+    id: 'crews',
+    title: 'Acá cargás las cuadrillas',
+    description: 'Dentro de Daily Entries, en esta sección creás y gestionás las crews para asignarlas a las entradas.',
+    page: 'daily',
+    targetSelector: '[data-onboarding=\"daily-create-crew\"]',
   },
   {
     id: 'payroll',
@@ -56,6 +58,12 @@ const onboardingSteps: Array<{
     title: 'Acá ves y emitís comprobantes',
     description: 'En Comprobantes consultás el historial y emitís informes para respaldo y auditoría.',
     page: 'receipt',
+  },
+  {
+    id: 'stats',
+    title: 'Acá seguís el avance general',
+    description: 'En Stats ves el progreso por crew, por tarea y el estado global del proyecto.',
+    page: 'stats',
   },
 ];
 

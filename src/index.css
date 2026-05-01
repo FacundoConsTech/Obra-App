@@ -1,4 +1,87 @@
-@import "tailwindcss";
+﻿@import "tailwindcss";
 
-/* opcional */
-html, body, #root { height: 100%; }
+html,
+body,
+#root {
+  height: 100%;
+}
+
+.landing-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  border-radius: 0.9rem;
+  padding: 1rem;
+}
+
+.landing-float {
+  animation: landingFloat 7s ease-in-out infinite;
+}
+
+.landing-reveal {
+  animation: landingReveal 560ms ease both;
+}
+
+.landing-image-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  min-height: 260px;
+  background: #0d1525;
+}
+
+.landing-image-wrap img {
+  transition: transform 1.1s ease;
+}
+
+.landing-image-wrap:hover img {
+  transform: scale(1.03);
+}
+
+.landing-image-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    160deg,
+    rgba(5, 10, 18, 0.1) 0%,
+    rgba(5, 10, 18, 0.32) 65%,
+    rgba(5, 10, 18, 0.5) 100%
+  );
+}
+
+@keyframes landingFloat {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes landingReveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-float,
+  .landing-reveal {
+    animation: none;
+  }
+
+  .landing-image-wrap img {
+    transition: none;
+  }
+
+  .landing-image-wrap:hover img {
+    transform: none;
+  }
+}

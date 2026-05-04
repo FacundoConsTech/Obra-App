@@ -34,6 +34,9 @@ export default function LoginPage() {
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
+      options: {
+        emailRedirectTo: 'https://obra-bi8tys4xa-facundos-projects-fd795dc8.vercel.app/app',
+      },
     });
 
     if (signUpError) {

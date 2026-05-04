@@ -410,7 +410,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
       <div className="max-w-7xl mx-auto px-6 py-6">
         {/* Selector de PerÃ­odo */}
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
-          <h2 className="text-xl font-bold text-white mb-6">Seleccionar PerÃ­odo</h2>
+          <h2 className="text-xl font-bold text-white mb-6">Seleccionar Período</h2>
           
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>

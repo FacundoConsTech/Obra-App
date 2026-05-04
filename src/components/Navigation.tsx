@@ -1,7 +1,7 @@
 ﻿import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-type Page = 'planned' | 'daily' | 'payroll' | 'receipt' | 'stats';
+type Page = 'planned' | 'daily' | 'payroll' | 'stats';
 type ProjectOption = { id: string; name: string };
 
 type NavigationProps = {
@@ -33,11 +33,10 @@ export default function Navigation({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   const pages = [
-    { id: 'stats' as Page, name: 'Stats' },
     { id: 'planned' as Page, name: 'Planned' },
     { id: 'daily' as Page, name: 'Daily Entries' },
     { id: 'payroll' as Page, name: 'Payroll' },
-    { id: 'receipt' as Page, name: 'Comprobantes' },
+    { id: 'stats' as Page, name: 'Stats' },
   ];
 
   const closeCreateProjectPanel = () => {

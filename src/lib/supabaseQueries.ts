@@ -87,6 +87,10 @@ export type PaymentReceipt = {
   created_at: Date;
 };
 
+type PaymentReceiptWriteInput = Omit<PaymentReceipt, 'id' | 'created_at' | 'number'> & {
+  number?: string;
+};
+
 export type PayrollLiquidationItem = {
   id: string;
   payroll_period_id: string;
@@ -184,6 +188,296 @@ export const createProject = async (projectData: {
   }
 
   return id;
+};
+
+type BootstrapProjectsResult = {
+  principalProjectId: string;
+  demoProjectId: string;
+};
+
+const getISODateOffset = (daysOffset: number): string => {
+  const date = new Date();
+  date.setDate(date.getDate() + daysOffset);
+  return getLocalISODate(date);
+};
+
+const seedDemoProjectData = async (projectId: string): Promise<void> => {
+  const nowIso = new Date().toISOString();
+
+  const crewSilleterosId = generateClientId();
+  const crewAlbanileriaId = generateClientId();
+  const crewPlomeriaId = generateClientId();
+
+  const crewsPayload = [
+    {
+      id: crewSilleterosId,
+      name: 'Crew Silleteros',
+      foreman_name: 'Carlos Benitez',
+      member_count: 6,
+      active: true,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+    {
+      id: crewAlbanileriaId,
+      name: 'Crew Albañilería',
+      foreman_name: 'Miguel Farías',
+      member_count: 5,
+      active: true,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+    {
+      id: crewPlomeriaId,
+      name: 'Crew Plomería',
+      foreman_name: 'Luciano Quiroga',
+      member_count: 4,
+      active: true,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+  ];
+
+  const { error: crewsError } = await supabase.from('crews').insert(crewsPayload);
+  if (crewsError) {
+    throw formatSupabaseError('seedDemoProjectData crews insert failed', crewsError, crewsPayload);
+  }
+
+  const taskHormigonId = generateClientId();
+  const taskMurosId = generateClientId();
+  const taskCanosId = generateClientId();
+
+  const tasksPayload = [
+    {
+      id: taskHormigonId,
+      rubro: 'Crew Silleteros',
+      task_code: 'H-101',
+      description: 'Hormigón de losa de planta baja',
+      total_qty: 120,
+      unit: 'm3',
+      unit_price: 95000,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+    {
+      id: taskMurosId,
+      rubro: 'Crew Albañilería',
+      task_code: 'M-210',
+      description: 'Muros exteriores de ladrillo hueco',
+      total_qty: 420,
+      unit: 'm2',
+      unit_price: 32000,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+    {
+      id: taskCanosId,
+      rubro: 'Crew Plomería',
+      task_code: 'P-305',
+      description: 'Tendido de caños de agua fría',
+      total_qty: 260,
+      unit: 'ml',
+      unit_price: 18000,
+      project_id: projectId,
+      created_at: nowIso,
+      updated_at: nowIso,
+    },
+  ];
+
+  const { error: tasksError } = await supabase.from('tasks').insert(tasksPayload);
+  if (tasksError) {
+    throw formatSupabaseError('seedDemoProjectData tasks insert failed', tasksError, tasksPayload);
+  }
+
+  const dateMinus12 = getISODateOffset(-12);
+  const dateMinus10 = getISODateOffset(-10);
+  const dateMinus8 = getISODateOffset(-8);
+  const dateMinus6 = getISODateOffset(-6);
+  const dateMinus4 = getISODateOffset(-4);
+
+  const dailyEntriesPayload = [
+    {
+      id: generateClientId(),
+      date: dateMinus12,
+      task_id: taskHormigonId,
+      crew_id: crewSilleterosId,
+      qty: 14,
+      unit: 'm3',
+      foreman: 'Carlos Benitez',
+      notes: 'Hormigonado de primer tramo',
+      project_id: projectId,
+      created_at: nowIso,
+    },
+    {
+      id: generateClientId(),
+      date: dateMinus10,
+      task_id: taskHormigonId,
+      crew_id: crewSilleterosId,
+      qty: 18,
+      unit: 'm3',
+      foreman: 'Carlos Benitez',
+      notes: 'Avance sobre losa',
+      project_id: projectId,
+      created_at: nowIso,
+    },
+    {
+      id: generateClientId(),
+      date: dateMinus8,
+      task_id: taskMurosId,
+      crew_id: crewAlbanileriaId,
+      qty: 72,
+      unit: 'm2',
+      foreman: 'Miguel Farías',
+      notes: 'Levantamiento de mampostería',
+      project_id: projectId,
+      created_at: nowIso,
+    },
+    {
+      id: generateClientId(),
+      date: dateMinus6,
+      task_id: taskMurosId,
+      crew_id: crewAlbanileriaId,
+      qty: 56,
+      unit: 'm2',
+      foreman: 'Miguel Farías',
+      notes: 'Continuación de muros perimetrales',
+      project_id: projectId,
+      created_at: nowIso,
+    },
+    {
+      id: generateClientId(),
+      date: dateMinus4,
+      task_id: taskCanosId,
+      crew_id: crewPlomeriaId,
+      qty: 40,
+      unit: 'ml',
+      foreman: 'Luciano Quiroga',
+      notes: 'Canalización sector cocina',
+      project_id: projectId,
+      created_at: nowIso,
+    },
+  ];
+
+  const { error: entriesError } = await supabase.from('daily_entries').insert(dailyEntriesPayload);
+  if (entriesError) {
+    throw formatSupabaseError('seedDemoProjectData daily_entries insert failed', entriesError, dailyEntriesPayload);
+  }
+
+  const payrollPeriodId = generateClientId();
+  const payrollPeriodPayload = {
+    id: payrollPeriodId,
+    crew_id: crewSilleterosId,
+    start_date: dateMinus12,
+    end_date: dateMinus6,
+    total_value_completed: 3040000,
+    status: 'closed',
+    project_id: projectId,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+
+  const { error: periodError } = await supabase.from('payroll_periods').insert(payrollPeriodPayload);
+  if (periodError) {
+    throw formatSupabaseError('seedDemoProjectData payroll_periods insert failed', periodError, payrollPeriodPayload);
+  }
+
+  const receiptId = generateClientId();
+  const receiptIssueDate = dateMinus6;
+  const archivedReport = {
+    generated_at: nowIso,
+    receipt_number: null,
+    issue_date: receiptIssueDate,
+    crew: { id: crewSilleterosId, name: 'Crew Silleteros' },
+    period: { start_date: dateMinus12, end_date: dateMinus6 },
+    totals: {
+      total_amount: 2850000,
+      days_worked: 2,
+      item_count: 2,
+    },
+    entries: [
+      {
+        date: dateMinus12,
+        task_code: 'H-101',
+        description: 'Hormigón de losa de planta baja',
+        qty: 14,
+        unit: 'm3',
+        unit_price: 95000,
+        value: 1330000,
+      },
+      {
+        date: dateMinus10,
+        task_code: 'H-101',
+        description: 'Hormigón de losa de planta baja',
+        qty: 18,
+        unit: 'm3',
+        unit_price: 95000,
+        value: 1710000,
+      },
+    ],
+  };
+
+  const receiptPayload = {
+    id: receiptId,
+    payroll_period_id: payrollPeriodId,
+    issue_date: receiptIssueDate,
+    amount: 2850000,
+    currency: 'ARS' as const,
+    notes: `PAYROLL_REPORT::${JSON.stringify(archivedReport)}`,
+    project_id: projectId,
+    created_at: nowIso,
+  };
+
+  const { error: receiptError } = await supabase.from('payment_receipts').insert(receiptPayload);
+  if (receiptError) {
+    throw formatSupabaseError('seedDemoProjectData payment_receipts insert failed', receiptError, receiptPayload);
+  }
+
+  const liquidationPayload = {
+    id: generateClientId(),
+    payroll_period_id: payrollPeriodId,
+    receipt_id: receiptId,
+    crew_id: crewSilleterosId,
+    task_id: taskHormigonId,
+    liquidated_qty: 30,
+    unit: 'm3' as const,
+    unit_price: 95000,
+    currency: 'ARS' as const,
+    line_amount: 2850000,
+    executed_qty_snapshot: 32,
+    pending_qty_snapshot: 30,
+    as_of_date: dateMinus6,
+    project_id: projectId,
+    created_at: nowIso,
+  };
+
+  const { error: liquidationError } = await supabase.from('payroll_liquidation_items').insert(liquidationPayload);
+  if (liquidationError) {
+    throw formatSupabaseError(
+      'seedDemoProjectData payroll_liquidation_items insert failed',
+      liquidationError,
+      liquidationPayload
+    );
+  }
+};
+
+export const bootstrapInitialProjectsForUser = async (): Promise<BootstrapProjectsResult> => {
+  const principalProjectId = await createProject({
+    name: 'Proyecto principal',
+    description: 'Proyecto real de trabajo',
+  });
+  const demoProjectId = await createProject({
+    name: 'Proyecto prueba',
+    description: 'Proyecto demo con datos de ejemplo',
+  });
+
+  await seedDemoProjectData(demoProjectId);
+
+  return { principalProjectId, demoProjectId };
 };
 
 // ============================================
@@ -973,12 +1267,11 @@ export const getPaymentReceipt = async (id: string, projectId?: string): Promise
   } as PaymentReceipt;
 };
 
-export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id' | 'created_at'>): Promise<string> => {
+export const createPaymentReceipt = async (receiptData: PaymentReceiptWriteInput): Promise<string> => {
   const id = generateClientId();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id,
     payroll_period_id: receiptData.payroll_period_id,
-    number: receiptData.number,
     issue_date: receiptData.issue_date,
     amount: receiptData.amount,
     currency: receiptData.currency,
@@ -987,6 +1280,9 @@ export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id
     pdf_url: receiptData.pdf_url ?? null,
     created_at: new Date().toISOString(),
   };
+  if (receiptData.number) {
+    payload.number = receiptData.number;
+  }
 
   const { error } = await supabase.from('payment_receipts').insert(payload);
   if (error) {
@@ -997,14 +1293,13 @@ export const createPaymentReceipt = async (receiptData: Omit<PaymentReceipt, 'id
 };
 
 export const queueCreatePaymentReceipt = (
-  receiptData: Omit<PaymentReceipt, 'id' | 'created_at'>,
+  receiptData: PaymentReceiptWriteInput,
   projectId?: string
 ): QueuedWrite => {
   const id = generateClientId();
   const payload: Record<string, unknown> = {
     id,
     payroll_period_id: receiptData.payroll_period_id,
-    number: receiptData.number,
     issue_date: receiptData.issue_date,
     amount: receiptData.amount,
     currency: receiptData.currency,
@@ -1013,6 +1308,9 @@ export const queueCreatePaymentReceipt = (
     pdf_url: receiptData.pdf_url ?? null,
     created_at: new Date().toISOString(),
   };
+  if (receiptData.number) {
+    payload.number = receiptData.number;
+  }
   if (projectId) {
     payload.project_id = projectId;
   }
@@ -1022,6 +1320,15 @@ export const queueCreatePaymentReceipt = (
     .insert(payload)
     .then(({ error, status, statusText }) => {
       if (error) {
+        console.error('[Supabase][payment_receipts][insert][error]', {
+          status,
+          statusText,
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint,
+          payload,
+        });
         throw formatSupabaseError(
           `queueCreatePaymentReceipt insert failed (status=${status} ${statusText || ''})`,
           error,
@@ -1043,6 +1350,7 @@ export const getLiquidatedQtyByCrewTaskIds = async (
   if (taskIds.length === 0) return result;
 
   const uniqueTaskIds = [...new Set(taskIds)];
+
   let query = supabase
     .from('payroll_liquidation_items')
     .select('task_id, liquidated_qty')
@@ -1142,6 +1450,15 @@ export const queueCreatePayrollLiquidationItem = (itemData: {
     .insert(payload)
     .then(({ error, status, statusText }) => {
       if (error) {
+        console.error('[Supabase][payroll_liquidation_items][insert][error]', {
+          status,
+          statusText,
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint,
+          payload,
+        });
         throw formatSupabaseError(
           `queueCreatePayrollLiquidationItem insert failed (status=${status} ${statusText || ''})`,
           error,
@@ -1187,26 +1504,54 @@ export const getCrewsByIds = async (crewIds: string[], projectId?: string): Prom
 
 export const generateReceiptNumber = async (): Promise<string> => {
   const year = new Date().getFullYear();
-  const { data, error } = await supabase
-    .from('payment_receipts')
-    .select('number')
-    .gte('number', `REC-${year}-0000`)
-    .lte('number', `REC-${year}-9999`)
-    .order('number', { ascending: false })
-    .limit(1);
+  const prefix = `REC-${year}-`;
+  const suffixPattern = new RegExp(`^REC-${year}-(\\d+)$`);
+  const matchingNumbers: string[] = [];
 
-  if (error) {
-    throw error;
+  const pageSize = 1000;
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('payment_receipts')
+      .select('number')
+      .like('number', `${prefix}%`)
+      .range(from, from + pageSize - 1);
+
+    if (error) {
+      throw error;
+    }
+
+    const page = data || [];
+    if (page.length === 0) break;
+
+    for (const row of page) {
+      if (typeof row.number === 'string') {
+        matchingNumbers.push(row.number);
+      }
+    }
+
+    if (page.length < pageSize) break;
+    from += pageSize;
   }
-  
-  let nextNum = 1;
-  if (data && data.length > 0) {
-    const lastNumber = data[0].number;
-    const parts = lastNumber.split('-');
-    if (parts.length === 3 && parts[2]) {
-      nextNum = parseInt(parts[2]) + 1;
+
+  let maxNumber = 0;
+  for (const numberValue of matchingNumbers) {
+    const match = numberValue.match(suffixPattern);
+    if (!match || !match[1]) continue;
+    const parsed = Number.parseInt(match[1], 10);
+    if (Number.isFinite(parsed)) {
+      if (parsed > maxNumber) {
+        maxNumber = parsed;
+      }
     }
   }
-  
-  return `REC-${year}-${String(nextNum).padStart(4, '0')}`;
+
+  const nextNum = maxNumber + 1;
+  if (nextNum > 9999) {
+    throw new Error(`No hay más números de comprobante disponibles para ${year}.`);
+  }
+
+  const nextReceiptNumber = `REC-${year}-${String(nextNum).padStart(4, '0')}`;
+  return nextReceiptNumber;
 };

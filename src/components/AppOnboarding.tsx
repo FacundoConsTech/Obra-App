@@ -4,7 +4,7 @@ type OnboardingStep = {
   id: string;
   title: string;
   description: string;
-  page: 'planned' | 'daily' | 'payroll' | 'receipt' | 'stats';
+  page: 'planned' | 'daily' | 'payroll' | 'stats';
   targetSelector?: string;
 };
 

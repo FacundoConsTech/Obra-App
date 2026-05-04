@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import {
   getCrews, 
   getTasks,
@@ -8,14 +8,15 @@ import {
   getTaskPricesByTaskIds,
   getLiquidatedQtyByCrewTaskIds,
   queueCreatePayrollPeriod,
-  generateReceiptNumber,
   queueCreatePaymentReceipt,
   queueCreatePayrollLiquidationItem,
+  getPaymentReceipt,
   type Crew
 } from '../lib/supabaseQueries';
 import { formatDateLatam, getLocalISODate } from '../lib/dateUtils';
 import LatamDateInput from './LatamDateInput';
 import { loadIssuerProfile, getEmptyIssuerProfile, type IssuerProfile } from '../lib/issuerProfile';
+import ComprobantePage from './ComprobantePage';
 
 type PayrollEntry = {
   date: string;
@@ -154,19 +155,6 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         dateTo,
         activeProjectId
       );
-      console.log('[Payroll][Ledger][Read] lookup context', {
-        crew_id: selectedCrew,
-        task_ids: uniqueTaskIds,
-        date_from: dateFrom,
-        date_to: dateTo,
-      });
-      console.log('[Payroll][Ledger][Read] result', {
-        map_size: liquidatedQtyByTaskId.size,
-        entries: Array.from(liquidatedQtyByTaskId.entries()).map(([task_id, liquidated_qty]) => ({
-          task_id,
-          liquidated_qty,
-        })),
-      });
 
       const taskById = new Map(
         tasksData
@@ -303,19 +291,11 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         status: 'closed',
       }, activeProjectId);
 
-      let receiptNumber = '';
-      try {
-        receiptNumber = await withTimeout(generateReceiptNumber(), 10000, 'generateReceiptNumber');
-      } catch (numberError) {
-        console.warn('Could not generate sequential receipt number, using fallback.', numberError);
-        const year = new Date().getFullYear();
-        receiptNumber = `REC-${year}-${Date.now().toString().slice(-6)}`;
-      }
       const issueDate = getLocalISODate();
 
       const reportCopy = {
         generated_at: new Date().toISOString(),
-        receipt_number: receiptNumber,
+        receipt_number: null as string | null,
         issue_date: issueDate,
         crew: {
           id: calculation.crew_id,
@@ -333,46 +313,34 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         entries: calculation.entries,
       };
 
-      const queuedReceipt = queueCreatePaymentReceipt({
+      const receiptPayload = {
         payroll_period_id: queuedPeriod.id,
-        number: receiptNumber,
         issue_date: issueDate,
         amount: calculation.total_value,
         currency: 'ARS',
         notes: `PAYROLL_REPORT::${JSON.stringify(reportCopy)}`,
-      }, activeProjectId);
+      };
+      const queuedReceipt = queueCreatePaymentReceipt(receiptPayload, activeProjectId);
 
-      const queuedLiquidationItems = calculation.task_summaries
+      const liquidationPayloads = calculation.task_summaries
         .filter((summary) => summary.pending_qty > 0)
-        .map((summary) =>
-          queueCreatePayrollLiquidationItem({
-            payroll_period_id: queuedPeriod.id,
-            receipt_id: queuedReceipt.id,
-            crew_id: calculation.crew_id,
-            task_id: summary.task_id,
-            liquidated_qty: summary.pending_qty,
-            unit: (summary.unit || 'u') as 'm3' | 'ml' | 'm2' | 'u',
-            unit_price: summary.unit_price,
-            currency: 'ARS',
-            line_amount: summary.pending_qty * summary.unit_price,
-            executed_qty_snapshot: summary.executed_qty,
-            pending_qty_snapshot: summary.pending_qty,
-            as_of_date: calculation.end_date,
-          }, activeProjectId)
-        );
-      console.log(
-        '[Payroll][Ledger][Write] queued liquidation items',
-        queuedLiquidationItems.length,
-        calculation.task_summaries
-          .filter((summary) => summary.pending_qty > 0)
-          .map((summary) => ({
-            crew_id: calculation.crew_id,
-            task_id: summary.task_id,
-            as_of_date: calculation.end_date,
-            liquidated_qty: summary.pending_qty,
-          }))
+        .map((summary) => ({
+          payroll_period_id: queuedPeriod.id,
+          receipt_id: queuedReceipt.id,
+          crew_id: calculation.crew_id,
+          task_id: summary.task_id,
+          liquidated_qty: summary.pending_qty,
+          unit: (summary.unit || 'u') as 'm3' | 'ml' | 'm2' | 'u',
+          unit_price: summary.unit_price,
+          currency: 'ARS' as const,
+          line_amount: summary.pending_qty * summary.unit_price,
+          executed_qty_snapshot: summary.executed_qty,
+          pending_qty_snapshot: summary.pending_qty,
+          as_of_date: calculation.end_date,
+        }));
+      const queuedLiquidationItems = liquidationPayloads.map((payload) =>
+        queueCreatePayrollLiquidationItem(payload, activeProjectId)
       );
-
       await withTimeout(
         Promise.all([
           queuedPeriod.commit,
@@ -383,6 +351,16 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         'emitPayrollReport'
       );
 
+      const createdReceipt = await withTimeout(
+        getPaymentReceipt(queuedReceipt.id, activeProjectId),
+        10000,
+        'loadGeneratedReceipt'
+      );
+      if (!createdReceipt?.number) {
+        throw new Error('No se pudo obtener el número generado del comprobante.');
+      }
+      const receiptNumber = createdReceipt.number;
+
       setGeneratedReport({
         receipt_id: queuedReceipt.id,
         receipt_number: receiptNumber,
@@ -392,7 +370,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);
-      alert('No se pudo emitir el informe. Verifica la conexión y la configuración de base de datos.');
+      alert('No se pudo emitir el informe. Verifica la conexiÃ³n y la configuraciÃ³n de base de datos.');
     } finally {
       setGeneratingReport(false);
     }
@@ -423,16 +401,16 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-white mb-2">Payroll</h1>
-              <p className="text-gray-400">Liquidación por cuadrilla</p>
+              <p className="text-gray-400">LiquidaciÃ³n por cuadrilla</p>
             </div>
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
-        {/* Selector de Período */}
+        {/* Selector de PerÃ­odo */}
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
-          <h2 className="text-xl font-bold text-white mb-6">Seleccionar Período</h2>
+          <h2 className="text-xl font-bold text-white mb-6">Seleccionar PerÃ­odo</h2>
           
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
@@ -483,7 +461,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
           </div>
         </div>
 
-        {/* Resultado del Cálculo */}
+        {/* Resultado del CÃ¡lculo */}
         {calculation && (
           <div className="bg-gray-800/30 backdrop-blur-sm rounded-2xl border border-gray-700 overflow-hidden mb-8">
             <div className="p-6 border-b border-gray-700">
@@ -622,10 +600,10 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
             <div className="bg-white text-black p-6 rounded-lg">
               <div className="flex justify-between items-start mb-6">
                 <div>
-                  <h4 className="text-2xl font-bold">{issuerProfile.company_name || '—'}</h4>
-                  <p className="text-gray-600">CUIL/CUIT: {issuerProfile.cuit_cuil || '—'}</p>
-                  <p className="text-gray-600">{issuerProfile.address || '—'}</p>
-                  <p className="text-gray-600">{issuerProfile.phone || '—'}</p>
+                  <h4 className="text-2xl font-bold">{issuerProfile.company_name || 'â€”'}</h4>
+                  <p className="text-gray-600">CUIL/CUIT: {issuerProfile.cuit_cuil || 'â€”'}</p>
+                  <p className="text-gray-600">{issuerProfile.address || 'â€”'}</p>
+                  <p className="text-gray-600">{issuerProfile.phone || 'â€”'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-semibold">
@@ -641,12 +619,12 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
                 <div>
                   <h5 className="font-semibold">Receptor</h5>
                   <p>Crew: {calculation.crew_name}</p>
-                  <p>Período: {formatDateLatam(calculation.start_date)} a {formatDateLatam(calculation.end_date)}</p>
+                  <p>PerÃ­odo: {formatDateLatam(calculation.start_date)} a {formatDateLatam(calculation.end_date)}</p>
                 </div>
                 <div>
                   <h5 className="font-semibold">Obra</h5>
                   <p>Nombre: ________________</p>
-                  <p>Dirección: ________________</p>
+                  <p>DirecciÃ³n: ________________</p>
                 </div>
               </div>
 
@@ -672,20 +650,20 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
                 </div>
                 <div>
                   <h5 className="font-semibold">Referencia</h5>
-                  <p>Número: {generatedReport?.receipt_number || 'REC-PENDIENTE'}</p>
-                  <p>Emitido por: {issuerProfile.company_name || '—'}</p>
+                  <p>NÃºmero: {generatedReport?.receipt_number || 'REC-PENDIENTE'}</p>
+                  <p>Emitido por: {issuerProfile.company_name || 'â€”'}</p>
                 </div>
               </div>
 
               <div className="mt-8 flex justify-between">
                 <div className="text-center">
                   <div className="border-t border-gray-400 pt-2">
-                    <p className="text-sm">Firma y aclaración - Emisor</p>
+                    <p className="text-sm">Firma y aclaraciÃ³n - Emisor</p>
                   </div>
                 </div>
                 <div className="text-center">
                   <div className="border-t border-gray-400 pt-2">
-                    <p className="text-sm">Firma y aclaración - Receptor</p>
+                    <p className="text-sm">Firma y aclaraciÃ³n - Receptor</p>
                   </div>
                 </div>
               </div>
@@ -708,6 +686,14 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
           </div>
         )}
 
+        <div className="mt-8">
+          <div className="mb-4">
+            <h3 className="text-xl font-bold text-white">Comprobantes</h3>
+            <p className="text-gray-400 text-sm">Historial, vista previa y exportación de comprobantes emitidos.</p>
+          </div>
+          <ComprobantePage activeProjectId={activeProjectId} embedded />
+        </div>
+
         {/* Stats */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
@@ -718,7 +704,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
             <div className="text-2xl font-bold text-white">
               {calculation ? calculation.days_worked : 0}
             </div>
-            <div className="text-sm text-gray-400">Días Trabajados</div>
+            <div className="text-sm text-gray-400">DÃ­as Trabajados</div>
           </div>
           <div className="bg-gray-800/30 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
             <div className="text-2xl font-bold text-white">
@@ -734,6 +720,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
     </div>
   );
 }
+
 
 
 

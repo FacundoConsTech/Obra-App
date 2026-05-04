@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import {
   getPaymentReceiptsList,
   getPaymentReceipt,
@@ -38,15 +38,10 @@ type PayrollReportArchive = {
 
 type ComprobantePageProps = {
   activeProjectId: string | null;
+  embedded?: boolean;
 };
 
-export default function ComprobantePage({ activeProjectId }: ComprobantePageProps) {
-  const DEBUG_TIMING = true;
-  const renderCountRef = useRef(0);
-  const mountStartRef = useRef<number | null>(null);
-  const loadStartRef = useRef<number | null>(null);
-  const loadRunRef = useRef(0);
-  const effectRunRef = useRef(0);
+export default function ComprobantePage({ activeProjectId, embedded = false }: ComprobantePageProps) {
   const [receipts, setReceipts] = useState<PaymentReceiptWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentReceiptWithRelations | null>(null);
@@ -54,20 +49,8 @@ export default function ComprobantePage({ activeProjectId }: ComprobantePageProp
   const [filterDateTo, setFilterDateTo] = useState('');
   const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
   const [savingIssuerProfile, setSavingIssuerProfile] = useState(false);
-  renderCountRef.current += 1;
-  if (DEBUG_TIMING && mountStartRef.current === null) {
-    mountStartRef.current = performance.now();
-    console.info('[Comprobantes][timing] mount start');
-  }
 
   useEffect(() => {
-    effectRunRef.current += 1;
-    if (DEBUG_TIMING) {
-      console.info('[Comprobantes][timing] project effect run', {
-        effectRun: effectRunRef.current,
-        activeProjectId,
-      });
-    }
     setLoading(true);
     setSelectedReceipt(null);
     void loadReceipts(activeProjectId);
@@ -85,73 +68,18 @@ export default function ComprobantePage({ activeProjectId }: ComprobantePageProp
     };
   }, []);
 
-  useEffect(() => {
-    if (!DEBUG_TIMING) return;
-    if (!loading) {
-      const now = performance.now();
-      const mountMs = mountStartRef.current ? now - mountStartRef.current : null;
-      const loadMs = loadStartRef.current ? now - loadStartRef.current : null;
-      console.info('[Comprobantes][timing] first usable render', {
-        receipts: receipts.length,
-        renderCount: renderCountRef.current,
-        mountToUsableMs: mountMs ? Number(mountMs.toFixed(1)) : null,
-        loadToUsableMs: loadMs ? Number(loadMs.toFixed(1)) : null,
-      });
-    }
-  }, [loading, receipts.length]);
-
   const loadReceipts = async (projectId: string | null) => {
     if (!projectId) {
       setReceipts([]);
       setLoading(false);
       return;
     }
-
-    loadRunRef.current += 1;
-    loadStartRef.current = performance.now();
-    const runId = loadRunRef.current;
-    if (DEBUG_TIMING) {
-      console.info('[Comprobantes][timing] loadReceipts start', { runId });
-    }
-
-    const t0 = performance.now();
     try {
-      const tReceipts0 = performance.now();
       const receiptsData = await getPaymentReceiptsList(projectId);
-      const tReceipts1 = performance.now();
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] receipts query done', {
-          runId,
-          count: receiptsData.length,
-          ms: Number((tReceipts1 - tReceipts0).toFixed(1)),
-        });
-      }
       const periodIds = [...new Set(receiptsData.map((receipt) => receipt.payroll_period_id))];
-      const tPeriods0 = performance.now();
       const periodsData = await getPayrollPeriodsByIds(periodIds, projectId);
-      const tPeriods1 = performance.now();
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] payroll periods query done', {
-          runId,
-          requestedIds: periodIds.length,
-          returned: periodsData.length,
-          ms: Number((tPeriods1 - tPeriods0).toFixed(1)),
-        });
-      }
       const crewIds = [...new Set(periodsData.map((period) => period.crew_id))];
-      const tCrews0 = performance.now();
       const crewsData = await getCrewsByIds(crewIds, projectId);
-      const tCrews1 = performance.now();
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] crews query done', {
-          runId,
-          requestedIds: crewIds.length,
-          returned: crewsData.length,
-          ms: Number((tCrews1 - tCrews0).toFixed(1)),
-        });
-      }
-
-      const tMerge0 = performance.now();
       const periodById = new Map(periodsData.map((period) => [period.id, period]));
       const crewById = new Map(crewsData.map((crew) => [crew.id, crew]));
 
@@ -170,37 +98,10 @@ export default function ComprobantePage({ activeProjectId }: ComprobantePageProp
           } as PaymentReceiptWithRelations;
         })
         .filter((receipt): receipt is PaymentReceiptWithRelations => receipt !== null);
-      const tMerge1 = performance.now();
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] relation merge done', {
-          runId,
-          merged: receiptsWithRelations.length,
-          ms: Number((tMerge1 - tMerge0).toFixed(1)),
-        });
-      }
-
-      const tSet0 = performance.now();
       setReceipts(receiptsWithRelations);
-      const tSet1 = performance.now();
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] state set scheduled', {
-          runId,
-          ms: Number((tSet1 - tSet0).toFixed(3)),
-        });
-        console.info('[Comprobantes][timing] loadReceipts total done', {
-          runId,
-          ms: Number((tSet1 - t0).toFixed(1)),
-        });
-      }
     } catch (error) {
       console.error('Error loading receipts:', error);
     } finally {
-      if (DEBUG_TIMING) {
-        console.info('[Comprobantes][timing] loading=false', {
-          runId,
-          totalMs: Number((performance.now() - t0).toFixed(1)),
-        });
-      }
       setLoading(false);
     }
   };
@@ -489,6 +390,14 @@ export default function ComprobantePage({ activeProjectId }: ComprobantePageProp
   };
 
   if (loading) {
+    if (embedded) {
+      return (
+        <div className="bg-gray-800/30 backdrop-blur-sm rounded-2xl border border-gray-700 p-6">
+          <div className="text-white text-lg">Cargando comprobantes...</div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center">
         <div className="text-white text-xl">Cargando...</div>
@@ -496,21 +405,25 @@ export default function ComprobantePage({ activeProjectId }: ComprobantePageProp
     );
   }
 
+  const rootClassName = embedded ? '' : 'min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black';
+  const contentClassName = embedded ? '' : 'max-w-7xl mx-auto px-6 py-6';
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black">
-      {/* Header */}
-      <div className="bg-black/20 backdrop-blur-sm border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-6 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-white mb-2">Comprobantes</h1>
-              <p className="text-gray-400">Gestión de comprobantes de pago</p>
+    <div className={rootClassName}>
+      {!embedded && (
+        <div className="bg-black/20 backdrop-blur-sm border-b border-gray-700">
+          <div className="max-w-7xl mx-auto px-6 py-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-3xl font-bold text-white mb-2">Comprobantes</h1>
+                <p className="text-gray-400">Gestión de comprobantes de pago</p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="max-w-7xl mx-auto px-6 py-6">
+      <div className={contentClassName}>
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 mb-8">
           <h3 className="text-lg font-semibold text-white mb-4">Datos del emisor en comprobantes</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

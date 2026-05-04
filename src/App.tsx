@@ -3,16 +3,15 @@ import Navigation from './components/Navigation';
 import PlannedPage from './components/PlannedPage';
 import DailyEntriesPage from './components/DailyEntriesPage';
 import PayrollPage from './components/PayrollPage';
-import ComprobantePage from './components/ComprobantePage';
 import StatsPage from './components/StatsPage';
 import LoginPage from './components/LoginPage';
 import LandingPage from './components/LandingPage';
 import AppOnboarding from './components/AppOnboarding';
 import { supabase } from './lib/supabase';
-import { createProject, getProjects, type Project } from './lib/supabaseQueries';
+import { bootstrapInitialProjectsForUser, createProject, getProjects, type Project } from './lib/supabaseQueries';
 import type { Session } from '@supabase/supabase-js';
 
-type Page = 'planned' | 'daily' | 'payroll' | 'receipt' | 'stats';
+type Page = 'planned' | 'daily' | 'payroll' | 'stats';
 
 type RouteView = 'landing' | 'app';
 
@@ -29,6 +28,13 @@ const onboardingSteps: Array<{
   targetSelector?: string;
 }> = [
   {
+    id: 'crews',
+    title: 'Acá cargás las cuadrillas',
+    description: 'Primero creás todas las crews que participan en la obra para mantener la operación ordenada.',
+    page: 'daily',
+    targetSelector: '[data-onboarding=\"daily-create-crew\"]',
+  },
+  {
     id: 'planned',
     title: 'Acá planificás las tareas',
     description: 'En Planned cargás rubros, tareas, cantidades y precios para planificar el trabajo.',
@@ -41,23 +47,10 @@ const onboardingSteps: Array<{
     page: 'daily',
   },
   {
-    id: 'crews',
-    title: 'Acá cargás las cuadrillas',
-    description: 'Dentro de Daily Entries, en esta sección creás y gestionás las crews para asignarlas a las entradas.',
-    page: 'daily',
-    targetSelector: '[data-onboarding=\"daily-create-crew\"]',
-  },
-  {
     id: 'payroll',
     title: 'Acá calculás la liquidación',
     description: 'En Payroll calculás el total del período en base a lo ejecutado por cada crew.',
     page: 'payroll',
-  },
-  {
-    id: 'receipt',
-    title: 'Acá ves y emitís comprobantes',
-    description: 'En Comprobantes consultás el historial y emitís informes para respaldo y auditoría.',
-    page: 'receipt',
   },
   {
     id: 'stats',
@@ -171,7 +164,15 @@ export default function App() {
     let active = true;
     const loadProjects = async () => {
       try {
-        const projectsData = await getProjects();
+        let projectsData = await getProjects();
+        if (projectsData.length === 0) {
+          const { principalProjectId } = await bootstrapInitialProjectsForUser();
+          projectsData = await getProjects();
+          if (!active) return;
+          setProjects(projectsData);
+          setActiveProjectId(principalProjectId);
+          return;
+        }
         if (!active) return;
 
         setProjects(projectsData);
@@ -276,7 +277,6 @@ export default function App() {
       {currentPage === 'planned' && <PlannedPage activeProjectId={activeProjectId} />}
       {currentPage === 'daily' && <DailyEntriesPage activeProjectId={activeProjectId} />}
       {currentPage === 'payroll' && <PayrollPage activeProjectId={activeProjectId} />}
-      {currentPage === 'receipt' && <ComprobantePage activeProjectId={activeProjectId} />}
 
       {onboardingVisible && (
         <AppOnboarding

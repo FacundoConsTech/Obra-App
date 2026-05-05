@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import {
   getTasks,
   getCrews,
   updateTask,
+  getTaskUsageSnapshot,
+  removeTaskWithUsagePolicy,
   getCurrentTaskPrice,
   getCurrentTaskPricesByTaskIds,
   createTaskPrice,
@@ -33,6 +35,10 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
   const [editForm, setEditForm] = useState({ total_qty: '', unit: '', unit_price: '' });
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [pendingDeleteTask, setPendingDeleteTask] = useState<TaskWithProgress | null>(null);
+  const [pendingDeleteHasUsage, setPendingDeleteHasUsage] = useState(false);
+  const [pendingDeleteMessage, setPendingDeleteMessage] = useState('');
   const [createForm, setCreateForm] = useState({
     rubro: '',
     task_code: '',
@@ -227,6 +233,58 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
     setEditForm({ total_qty: '', unit: '', unit_price: '' });
   };
 
+  const handleDeleteTask = async (task: TaskWithProgress) => {
+    try {
+      if (deletingTaskId) return;
+      if (!activeProjectId) {
+        return;
+      }
+
+      setDeletingTaskId(task.id);
+      const usage = await getTaskUsageSnapshot(task.id, activeProjectId);
+
+      const hasUsage =
+        usage.dailyEntries > 0 ||
+        usage.payrollLiquidationItems > 0 ||
+        usage.taskPrices > 0;
+
+      setPendingDeleteTask(task);
+      setPendingDeleteHasUsage(hasUsage);
+      setPendingDeleteMessage(hasUsage
+        ? 'Aviso: Esta tarea tiene información cargada de Payroll/Daily Entries, no se puede eliminar, solo se va a archivar.'
+        : '¿Eliminar esta tarea?');
+    } catch (error) {
+      console.error('Error preparing task removal:', error);
+    } finally {
+      setDeletingTaskId(null);
+    }
+  };
+
+  const handleCancelPendingDelete = () => {
+    setPendingDeleteTask(null);
+    setPendingDeleteHasUsage(false);
+    setPendingDeleteMessage('');
+  };
+
+  const handleConfirmPendingDelete = async () => {
+    if (!pendingDeleteTask || !activeProjectId || deletingTaskId) return;
+
+    try {
+      setDeletingTaskId(pendingDeleteTask.id);
+      await removeTaskWithUsagePolicy(pendingDeleteTask.id, activeProjectId);
+      if (editingTask === pendingDeleteTask.id) {
+        handleCancel();
+      }
+      setTasks((prev) => prev.filter((item) => item.id !== pendingDeleteTask.id));
+      await loadTasks();
+      handleCancelPendingDelete();
+    } catch (error) {
+      console.error('Error removing task:', error);
+    } finally {
+      setDeletingTaskId(null);
+    }
+  };
+
   const handleCreateTask = async () => {
     if (creatingTask) return;
     if (!activeProjectId) {
@@ -336,7 +394,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-white mb-2">Planned Tasks</h1>
-              <p className="text-gray-400">Gestión de tareas y progreso</p>
+              <p className="text-gray-400">GestiÃ³n de tareas y progreso</p>
             </div>
             <button
               onClick={() => setShowCreateForm((v) => !v)}
@@ -375,7 +433,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
               <input
                 value={createForm.description}
                 onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
-                placeholder="Descripción"
+                placeholder="DescripciÃ³n"
                 className="bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white"
               />
               <input
@@ -445,7 +503,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="TaskID o descripción..."
+                placeholder="TaskID o descripciÃ³n..."
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white placeholder-gray-400 focus:ring-2 focus:ring-white/20 focus:border-transparent"
               />
             </div>
@@ -468,7 +526,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                 <tr>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Rubro</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">TaskID</th>
-                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Descripción</th>
+                  <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">DescripciÃ³n</th>
                   <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">TotalQty</th>
                   <th className="px-6 py-4 text-center text-sm font-semibold text-gray-300">Unit</th>
                   <th className="px-6 py-4 text-right text-sm font-semibold text-gray-300">UnitPrice</th>
@@ -493,10 +551,10 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                           value={editForm.total_qty}
                           onChange={(e) => setEditForm({...editForm, total_qty: e.target.value})}
                           className="w-20 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm"
-                          placeholder="—"
+                          placeholder="â€”"
                         />
                       ) : (
-                        <span className="text-gray-300">{task.total_qty || '—'}</span>
+                        <span className="text-gray-300">{task.total_qty || 'â€”'}</span>
                       )}
                     </td>
                     
@@ -514,7 +572,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                           <option value="ml">ml</option>
                         </select>
                       ) : (
-                        <span className="text-gray-300">{task.unit || '—'}</span>
+                        <span className="text-gray-300">{task.unit || 'â€”'}</span>
                       )}
                     </td>
                     
@@ -527,7 +585,7 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                           value={editForm.unit_price}
                           onChange={(e) => setEditForm({...editForm, unit_price: e.target.value})}
                           className="w-24 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm"
-                          placeholder="—"
+                          placeholder="â€”"
                         />
                       ) : (
                         <span className="text-gray-300">{task.unit_price !== null && task.unit_price !== undefined ? '$' + task.unit_price.toLocaleString() : 'N/A'}</span>
@@ -553,22 +611,37 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
                             onClick={handleSave}
                             className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm transition-colors"
                           >
-                            ✓
+                            âœ“
                           </button>
                           <button
                             onClick={handleCancel}
                             className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors"
                           >
-                            ✕
+                            âœ•
                           </button>
                         </div>
                       ) : (
-                        <button
-                          onClick={() => handleEdit(task)}
-                          className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm transition-colors"
-                        >
-                          Editar
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(task)}
+                            className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm transition-colors"
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteTask(task)}
+                            disabled={deletingTaskId === task.id}
+                            className={`px-3 py-1 rounded text-sm transition-colors ${
+                              deletingTaskId === task.id
+                                ? 'bg-red-900 text-red-200 cursor-not-allowed'
+                                : 'bg-red-700 hover:bg-red-800 text-white'
+                            }`}
+                          >
+                            {deletingTaskId === task.id ? 'Eliminando...' : 'Eliminar'}
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -604,6 +677,41 @@ export default function PlannedPage({ activeProjectId }: PlannedPageProps) {
           </div>
         </div>
       </div>
+
+      {pendingDeleteTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-white mb-3">Confirmar acción</h3>
+            <p className="text-gray-200">{pendingDeleteMessage}</p>
+            {pendingDeleteHasUsage && (
+              <p className="text-xs text-gray-400 mt-2">
+                La tarea se archivará y dejará de verse en Planned.
+              </p>
+            )}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCancelPendingDelete}
+                disabled={!!deletingTaskId}
+                className="px-4 py-2 rounded-lg border border-gray-600 text-gray-200 hover:text-white hover:border-gray-400"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmPendingDelete()}
+                disabled={!!deletingTaskId}
+                className={`px-4 py-2 rounded-lg font-semibold ${
+                  deletingTaskId ? 'bg-gray-700 text-gray-300 cursor-not-allowed' : 'bg-red-700 text-white hover:bg-red-800'
+                }`}
+              >
+                {deletingTaskId ? 'Procesando...' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

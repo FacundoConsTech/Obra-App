@@ -39,9 +39,14 @@ type PayrollReportArchive = {
 type ComprobantePageProps = {
   activeProjectId: string | null;
   embedded?: boolean;
+  refreshToken?: number;
 };
 
-export default function ComprobantePage({ activeProjectId, embedded = false }: ComprobantePageProps) {
+export default function ComprobantePage({
+  activeProjectId,
+  embedded = false,
+  refreshToken,
+}: ComprobantePageProps) {
   const [receipts, setReceipts] = useState<PaymentReceiptWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentReceiptWithRelations | null>(null);
@@ -54,7 +59,7 @@ export default function ComprobantePage({ activeProjectId, embedded = false }: C
     setLoading(true);
     setSelectedReceipt(null);
     void loadReceipts(activeProjectId);
-  }, [activeProjectId]);
+  }, [activeProjectId, refreshToken]);
 
   useEffect(() => {
     let active = true;

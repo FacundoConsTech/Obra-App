@@ -31,6 +31,7 @@ export type Task = {
   rubro: string;
   task_code: string;
   description: string;
+  active?: boolean;
   total_qty?: number;
   unit?: 'm3' | 'ml' | 'm2' | 'u';
   unit_price?: number | null;
@@ -662,17 +663,20 @@ export const getTasks = async (projectId?: string): Promise<Task[]> => {
     throw error;
   }
 
-  return (data || []).map((row) => ({
-    id: row.id,
-    rubro: row.rubro,
-    task_code: row.task_code,
-    description: row.description,
-    total_qty: row.total_qty ?? undefined,
-    unit: row.unit ?? undefined,
-    unit_price: row.unit_price ?? undefined,
-    created_at: fromSupabaseTimestamp(row.created_at),
-    updated_at: fromSupabaseTimestamp(row.updated_at),
-  }));
+  return (data || [])
+    .map((row) => ({
+      id: row.id,
+      rubro: row.rubro,
+      task_code: row.task_code,
+      description: row.description,
+      active: row.active ?? undefined,
+      total_qty: row.total_qty ?? undefined,
+      unit: row.unit ?? undefined,
+      unit_price: row.unit_price ?? undefined,
+      created_at: fromSupabaseTimestamp(row.created_at),
+      updated_at: fromSupabaseTimestamp(row.updated_at),
+    }))
+    .filter((row) => row.active !== false);
 };
 
 export const createTask = async (taskData: Omit<Task, 'id' | 'created_at' | 'updated_at'>): Promise<string> => {
@@ -1035,6 +1039,122 @@ export const createDailyEntry = async (entryData: Omit<DailyEntry, 'id' | 'creat
   return id;
 };
 
+export const deleteTask = async (id: string, projectId?: string): Promise<void> => {
+  let query = supabase.from('tasks').delete().eq('id', id);
+  if (projectId) {
+    query = query.eq('project_id', projectId);
+  }
+
+  const { data, error } = await query.select('id').maybeSingle();
+  if (error) {
+    throw formatSupabaseError('deleteTask failed', error, { id, projectId });
+  }
+  if (!data) {
+    throw new Error(`deleteTask affected 0 rows for task id=${id} and project_id=${projectId ?? 'n/a'}`);
+  }
+};
+
+type TaskUsageSnapshot = {
+  dailyEntries: number;
+  payrollLiquidationItems: number;
+  taskPrices: number;
+};
+
+const getTaskUsageCount = async (
+  tableName: 'daily_entries' | 'payroll_liquidation_items' | 'task_prices',
+  taskId: string,
+  projectId?: string
+) => {
+  let scopedQuery = supabase
+    .from(tableName)
+    .select('id', { count: 'exact', head: true })
+    .eq('task_id', taskId);
+
+  if (projectId && tableName !== 'task_prices') {
+    scopedQuery = scopedQuery.eq('project_id', projectId);
+  }
+
+  const { count, error } = await scopedQuery;
+  if (error) {
+    throw formatSupabaseError(`getTaskUsageCount failed for ${tableName}`, error, {
+      taskId,
+      projectId,
+    });
+  }
+
+  const scopedCount = count ?? 0;
+  if (scopedCount > 0 || !projectId || tableName === 'task_prices') {
+    return scopedCount;
+  }
+
+  const { count: unscopedCount, error: unscopedError } = await supabase
+    .from(tableName)
+    .select('id', { count: 'exact', head: true })
+    .eq('task_id', taskId);
+
+  if (unscopedError) {
+    throw formatSupabaseError(`getTaskUsageCount fallback failed for ${tableName}`, unscopedError, {
+      taskId,
+      projectId,
+    });
+  }
+
+  return unscopedCount ?? 0;
+};
+
+export const getTaskUsageSnapshot = async (taskId: string, projectId?: string): Promise<TaskUsageSnapshot> => {
+  const [dailyEntriesCount, liquidationCount, taskPricesCount] = await Promise.all([
+    getTaskUsageCount('daily_entries', taskId, projectId),
+    getTaskUsageCount('payroll_liquidation_items', taskId, projectId),
+    getTaskUsageCount('task_prices', taskId, projectId),
+  ]);
+
+  const result = {
+    dailyEntries: dailyEntriesCount,
+    payrollLiquidationItems: liquidationCount,
+    taskPrices: taskPricesCount,
+  };
+  return result;
+};
+
+export type TaskRemovalResult = 'deleted' | 'archived';
+
+export const removeTaskWithUsagePolicy = async (
+  taskId: string,
+  projectId?: string
+): Promise<TaskRemovalResult> => {
+  const usage = await getTaskUsageSnapshot(taskId, projectId);
+  const hasUsageHistory =
+    usage.dailyEntries > 0 || usage.payrollLiquidationItems > 0 || usage.taskPrices > 0;
+
+  if (!hasUsageHistory) {
+    await deleteTask(taskId, projectId);
+    return 'deleted';
+  }
+
+  let archiveQuery = supabase
+    .from('tasks')
+    .update({
+      active: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', taskId);
+
+  if (projectId) {
+    archiveQuery = archiveQuery.eq('project_id', projectId);
+  }
+
+  const { error } = await archiveQuery;
+  if (error) {
+    throw formatSupabaseError('removeTaskWithUsagePolicy archive failed', error, {
+      taskId,
+      projectId,
+    });
+  }
+
+  return 'archived';
+};
+
 export const queueCreateDailyEntry = (
   entryData: Omit<DailyEntry, 'id' | 'created_at'>,
   projectId?: string
@@ -1340,9 +1460,63 @@ export const queueCreatePaymentReceipt = (
   return { id, commit };
 };
 
+export const deletePaymentReceiptWithRelations = async (
+  receiptId: string,
+  projectId?: string
+): Promise<void> => {
+  let liquidationDelete = supabase
+    .from('payroll_liquidation_items')
+    .delete()
+    .eq('receipt_id', receiptId);
+  if (projectId) {
+    liquidationDelete = liquidationDelete.eq('project_id', projectId);
+  }
+
+  const { error: liquidationError } = await liquidationDelete;
+  if (liquidationError) {
+    throw formatSupabaseError('deletePaymentReceiptWithRelations liquidation delete failed', liquidationError, {
+      receiptId,
+      projectId,
+    });
+  }
+
+  let payrollPeriodUpdate = supabase
+    .from('payroll_periods')
+    .update({
+      receipt_id: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('receipt_id', receiptId);
+  if (projectId) {
+    payrollPeriodUpdate = payrollPeriodUpdate.eq('project_id', projectId);
+  }
+
+  const { error: payrollPeriodError } = await payrollPeriodUpdate;
+  if (payrollPeriodError) {
+    throw formatSupabaseError('deletePaymentReceiptWithRelations payroll_periods update failed', payrollPeriodError, {
+      receiptId,
+      projectId,
+    });
+  }
+
+  let receiptDelete = supabase.from('payment_receipts').delete().eq('id', receiptId);
+  if (projectId) {
+    receiptDelete = receiptDelete.eq('project_id', projectId);
+  }
+
+  const { error: receiptError } = await receiptDelete;
+  if (receiptError) {
+    throw formatSupabaseError('deletePaymentReceiptWithRelations receipt delete failed', receiptError, {
+      receiptId,
+      projectId,
+    });
+  }
+};
+
 export const getLiquidatedQtyByCrewTaskIds = async (
   crewId: string,
   taskIds: string[],
+  dateFrom: string | undefined,
   asOfDate: string,
   projectId?: string
 ): Promise<Map<string, number>> => {
@@ -1357,6 +1531,10 @@ export const getLiquidatedQtyByCrewTaskIds = async (
     .eq('crew_id', crewId)
     .in('task_id', uniqueTaskIds)
     .lte('as_of_date', asOfDate);
+
+  if (dateFrom) {
+    query = query.gte('as_of_date', dateFrom);
+  }
 
   if (projectId) {
     query = query.eq('project_id', projectId);

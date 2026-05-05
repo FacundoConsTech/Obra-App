@@ -73,6 +73,12 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
   const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(null);
   const [liquidatedAmount, setLiquidatedAmount] = useState(0);
   const [issuerProfile, setIssuerProfile] = useState<IssuerProfile>(getEmptyIssuerProfile());
+  const [comprobantesRefreshToken, setComprobantesRefreshToken] = useState(0);
+  const [showEmitConfirmModal, setShowEmitConfirmModal] = useState(false);
+  const [pendingEmitPayload, setPendingEmitPayload] = useState<{
+    pendingItems: PayrollTaskSummary[];
+    pendingTotal: number;
+  } | null>(null);
 
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -152,6 +158,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
       const liquidatedQtyByTaskId = await getLiquidatedQtyByCrewTaskIds(
         selectedCrew,
         uniqueTaskIds,
+        dateFrom,
         dateTo,
         activeProjectId
       );
@@ -215,7 +222,6 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
           pending_qty: pendingQty,
         };
       });
-
       const crew = crews.find(c => c.id === selectedCrew);
       const totalValue = entriesWithPrices.reduce((sum, entry) => sum + entry.value, 0);
       const daysWorked = new Set(entriesWithPrices.map(e => e.date)).size;
@@ -275,9 +281,9 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
   };
 
   const generateReceipt = async () => {
-    if (!activeProjectId || !calculation || generatingReport) return;
-    if (calculation.entries.length === 0) {
-      alert('No hay tareas certificadas en el periodo seleccionado.');
+    if (!activeProjectId || !calculation || generatingReport || !pendingEmitPayload) return;
+    if (pendingEmitPayload.pendingTotal <= 0 || pendingEmitPayload.pendingItems.length === 0) {
+      alert('No hay monto pendiente para liquidar.');
       return;
     }
 
@@ -287,7 +293,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         crew_id: calculation.crew_id,
         start_date: calculation.start_date,
         end_date: calculation.end_date,
-        total_value_completed: calculation.total_value,
+        total_value_completed: pendingEmitPayload.pendingTotal,
         status: 'closed',
       }, activeProjectId);
 
@@ -306,9 +312,9 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
           end_date: calculation.end_date,
         },
         totals: {
-          total_amount: calculation.total_value,
+          total_amount: pendingEmitPayload.pendingTotal,
           days_worked: calculation.days_worked,
-          item_count: calculation.entries.length,
+          item_count: pendingEmitPayload.pendingItems.length,
         },
         entries: calculation.entries,
       };
@@ -316,17 +322,33 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
       const receiptPayload = {
         payroll_period_id: queuedPeriod.id,
         issue_date: issueDate,
-        amount: calculation.total_value,
+        amount: pendingEmitPayload.pendingTotal,
         currency: 'ARS',
         notes: `PAYROLL_REPORT::${JSON.stringify(reportCopy)}`,
       };
       const queuedReceipt = queueCreatePaymentReceipt(receiptPayload, activeProjectId);
 
-      const liquidationPayloads = calculation.task_summaries
-        .filter((summary) => summary.pending_qty > 0)
+      await withTimeout(queuedPeriod.commit, 15000, 'createPayrollPeriod');
+      try {
+        await withTimeout(queuedReceipt.commit, 15000, 'createPaymentReceipt');
+      } catch (error) {
+        throw error;
+      }
+
+      const createdReceipt = await withTimeout(
+        getPaymentReceipt(queuedReceipt.id, activeProjectId),
+        10000,
+        'loadGeneratedReceipt'
+      );
+      if (!createdReceipt?.id) {
+        throw new Error('No se pudo crear el comprobante de pago.');
+      }
+      const receiptNumber = createdReceipt.number || 'REC-PENDIENTE';
+
+      const liquidationPayloads = pendingEmitPayload.pendingItems
         .map((summary) => ({
           payroll_period_id: queuedPeriod.id,
-          receipt_id: queuedReceipt.id,
+          receipt_id: createdReceipt.id,
           crew_id: calculation.crew_id,
           task_id: summary.task_id,
           liquidated_qty: summary.pending_qty,
@@ -342,31 +364,44 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
         queueCreatePayrollLiquidationItem(payload, activeProjectId)
       );
       await withTimeout(
-        Promise.all([
-          queuedPeriod.commit,
-          queuedReceipt.commit,
-          ...queuedLiquidationItems.map((item) => item.commit),
-        ]),
+        Promise.all(queuedLiquidationItems.map((item) => item.commit)),
         15000,
-        'emitPayrollReport'
+        'createPayrollLiquidationItems'
       );
-
-      const createdReceipt = await withTimeout(
-        getPaymentReceipt(queuedReceipt.id, activeProjectId),
-        10000,
-        'loadGeneratedReceipt'
-      );
-      if (!createdReceipt?.number) {
-        throw new Error('No se pudo obtener el número generado del comprobante.');
-      }
-      const receiptNumber = createdReceipt.number;
 
       setGeneratedReport({
-        receipt_id: queuedReceipt.id,
+        receipt_id: createdReceipt.id,
         receipt_number: receiptNumber,
         issue_date: issueDate,
       });
+      setShowEmitConfirmModal(false);
+      setPendingEmitPayload(null);
+      setComprobantesRefreshToken((prev) => prev + 1);
       await refreshLiquidatedAmount(calculation.crew_id, calculation.start_date, calculation.end_date, activeProjectId);
+      const recalculatedPendingMap = await getLiquidatedQtyByCrewTaskIds(
+        calculation.crew_id,
+        calculation.task_summaries.map((summary) => summary.task_id),
+        calculation.start_date,
+        calculation.end_date,
+        activeProjectId
+      );
+      const recalculatedTaskSummaries = calculation.task_summaries.map((summary) => {
+        const liquidatedQty = recalculatedPendingMap.get(summary.task_id) || 0;
+        const pendingQty = Math.max(0, summary.executed_qty - liquidatedQty);
+        return {
+          ...summary,
+          liquidated_qty: liquidatedQty,
+          pending_qty: pendingQty,
+        };
+      });
+      setCalculation((prev) =>
+        prev
+          ? {
+              ...prev,
+              task_summaries: recalculatedTaskSummaries,
+            }
+          : prev
+      );
       setShowReceipt(true);
     } catch (error) {
       console.error('Error generating receipt:', error);
@@ -374,6 +409,24 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
     } finally {
       setGeneratingReport(false);
     }
+  };
+
+  const handleOpenEmitConfirmModal = () => {
+    if (!calculation || generatingReport) return;
+
+    const pendingItems = calculation.task_summaries.filter((summary) => summary.pending_qty > 0);
+    const pendingTotal = pendingItems.reduce(
+      (sum, summary) => sum + summary.pending_qty * summary.unit_price,
+      0
+    );
+
+    if (pendingTotal <= 0 || pendingItems.length === 0) {
+      alert('No hay monto pendiente para liquidar.');
+      return;
+    }
+
+    setPendingEmitPayload({ pendingItems, pendingTotal });
+    setShowEmitConfirmModal(true);
   };
 
   const emittedAmount = calculation ? liquidatedAmount : 0;
@@ -567,7 +620,7 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
             <div className="p-6 border-t border-gray-700">
               <div className="flex gap-4">
                 <button
-                  onClick={generateReceipt}
+                  onClick={handleOpenEmitConfirmModal}
                   disabled={generatingReport || !!generatedReport}
                   className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
                     generatingReport || generatedReport
@@ -691,8 +744,48 @@ export default function PayrollPage({ activeProjectId }: PayrollPageProps) {
             <h3 className="text-xl font-bold text-white">Comprobantes</h3>
             <p className="text-gray-400 text-sm">Historial, vista previa y exportación de comprobantes emitidos.</p>
           </div>
-          <ComprobantePage activeProjectId={activeProjectId} embedded />
+          <ComprobantePage
+            activeProjectId={activeProjectId}
+            embedded
+            refreshToken={comprobantesRefreshToken}
+          />
         </div>
+
+        {showEmitConfirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+            <div className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+              <h3 className="text-lg font-semibold text-white mb-3">Confirmar emisión</h3>
+              <p className="text-gray-200">
+                ¿Estás seguro que querés emitir el comprobante? Esta acción no tiene vuelta atrás.
+              </p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEmitConfirmModal(false);
+                    setPendingEmitPayload(null);
+                  }}
+                  disabled={generatingReport}
+                  className="px-4 py-2 rounded-lg border border-gray-600 text-gray-200 hover:text-white hover:border-gray-400"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void generateReceipt()}
+                  disabled={generatingReport}
+                  className={`px-4 py-2 rounded-lg font-semibold ${
+                    generatingReport
+                      ? 'bg-gray-700 text-gray-300 cursor-not-allowed'
+                      : 'bg-green-600 text-white hover:bg-green-700'
+                  }`}
+                >
+                  {generatingReport ? 'Emitiendo...' : 'Emitir comprobante'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">

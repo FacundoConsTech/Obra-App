@@ -150,4 +150,4 @@ Obra App explores how simple digital tools can improve construction operations b
 
 ## Author
 
-Created by Facundo Pérez as part of a broader exploration into Construction Technology, digital workflows, and software applied to the built environment.
+Created by Facundo Perez Castelli as part of a broader exploration into Construction Technology, digital workflows, and software applied to the built environment.
